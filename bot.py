@@ -3,7 +3,8 @@ import logging
 import os
 import sys
 import nest_asyncio
-from zoneinfo import ZoneInfo  # Используем для работы с часовым поясом (Python 3.9+)
+import datetime
+from zoneinfo import ZoneInfo  # Можно убрать, если не нужно время по часовому поясу
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -15,41 +16,35 @@ from telegram.ext import (
     PicklePersistence
 )
 
-from dotenv import load_dotenv
-
-# Загружаем переменные из .env (если используете локально)
-load_dotenv()
+# (Необязательно) если используете .env локально:
+# from dotenv import load_dotenv
+# load_dotenv()
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
 )
 
-# Если на Windows — установим специальную политику event loop
 if sys.platform.startswith('win'):
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 nest_asyncio.apply()
 
 ###############################################################################
-# ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ И НАСТРОЙКИ
+# ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ
 ###############################################################################
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-APP_URL   = os.getenv("APP_URL")  # Публичный URL, например, https://my-bot.koyeb.app
+APP_URL   = os.getenv("APP_URL")    # например, https://my-bot.koyeb.app
 PORT      = int(os.getenv("PORT", "8000"))
-FRIEND_ID = 424546089
-MY_ID     = 1181433072
 
-# Часовой пояс: установим, например, для Екатеринбурга (UTC+5)
+FRIEND_ID = 424546089  # ваш друг
+MY_ID     = 1181433072 # вы
+
+# Пример использования datetime + zoneinfo:
 ekb_tz = ZoneInfo("Asia/Yekaterinburg")
-
-# Целевое время (здесь указано как локальное время Екатеринбурга)
 TARGET_DATETIME = datetime.datetime(2025, 7, 1, 23, 59, 0, tzinfo=ekb_tz)
 
-UPDATE_INTERVAL = 60  # Интервал обновления (сек)
-BAR_LENGTH = 16       # Длина прогресс-бара
-
 ###############################################################################
-# ЛОГИКА БОТА: команды и обработчики
+# ФУНКЦИИ БОТА
 ###############################################################################
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
@@ -66,13 +61,11 @@ async def start_actions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
         return
 
-    # Если persistent данные уже есть, не обнуляем их
     if "friend_count" not in context.bot_data:
         context.bot_data["friend_count"] = 0
     if "my_count" not in context.bot_data:
         context.bot_data["my_count"] = 0
     context.bot_data["thread_id"] = thread_id
-    # Сохраняем chat_id для обновления сообщения
     context.bot_data["actions_chat_id"] = update.effective_chat.id
 
     text = "Счётчик действий:\n"
@@ -132,8 +125,8 @@ async def update_counter_message(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def edit_count(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    Команда /edit_count <friend|me> <число> позволяет вручную изменить счётчик.
-    Например: /edit_count friend -1
+    Команда /edit_count <friend|me> <число>
+    Пример: /edit_count friend -1
     """
     if "friend_count" not in context.bot_data or "my_count" not in context.bot_data:
         await update.message.reply_text("Счётчик ещё не запущен. Используйте /start_actions.")
@@ -165,28 +158,36 @@ async def edit_count(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await update_counter_message(context)
 
 ###############################################################################
-# ЗАПУСК БОТА В РЕЖИМЕ WEBHOOK
+# ОБРАБОТЧИК ОШИБОК
+###############################################################################
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logging.error("Произошла ошибка:", exc_info=context.error)
+
+###############################################################################
+# ЗАПУСК В РЕЖИМЕ WEBHOOK
 ###############################################################################
 async def main_bot_webhook():
     if not BOT_TOKEN:
         raise ValueError("BOT_TOKEN не найден в переменных окружения!")
-    if not os.getenv("APP_URL"):
-        raise ValueError("APP_URL не найден. Укажите публичный URL вашего приложения.")
-    
-    # Используем PicklePersistence для сохранения данных между перезапусками
+    if not APP_URL:
+        raise ValueError("APP_URL не найден. Укажите публичный URL вашего приложения!")
+
+    # PicklePersistence для сохранения state
     persistence = PicklePersistence(filepath="bot_data.pickle")
-    
+
     application = ApplicationBuilder().token(BOT_TOKEN).persistence(persistence).build()
 
+    # Регистрируем хендлеры
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("start_actions", start_actions))
     application.add_handler(CommandHandler("edit_count", edit_count))
     msg_handler = MessageHandler(filters.TEXT & (~filters.COMMAND), count_messages)
     application.add_handler(msg_handler)
 
-    PORT = int(os.getenv("PORT", "8000"))
-    APP_URL = os.getenv("APP_URL")
-    
+    # Регистрация глобального обработчика ошибок
+    application.add_error_handler(error_handler)
+
+    # Запускаем webhook
     await application.run_webhook(
         listen="0.0.0.0",
         port=PORT,
