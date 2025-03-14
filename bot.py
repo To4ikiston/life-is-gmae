@@ -3,7 +3,7 @@ import logging
 import os
 import sys
 import nest_asyncio
-from threading import Thread
+from zoneinfo import ZoneInfo  # Используем для работы с часовым поясом (Python 3.9+)
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -15,19 +15,42 @@ from telegram.ext import (
     PicklePersistence
 )
 
-logging.basicConfig(level=logging.INFO)
+from dotenv import load_dotenv
 
+# Загружаем переменные из .env (если используете локально)
+load_dotenv()
+
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
+)
+
+# Если на Windows — установим специальную политику event loop
 if sys.platform.startswith('win'):
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 nest_asyncio.apply()
 
-# Читаем токен и другие переменные из окружения
+###############################################################################
+# ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ И НАСТРОЙКИ
+###############################################################################
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+APP_URL   = os.getenv("APP_URL")  # Публичный URL, например, https://my-bot.koyeb.app
+PORT      = int(os.getenv("PORT", "8000"))
 FRIEND_ID = 424546089
-MY_ID = 1181433072
+MY_ID     = 1181433072
 
-# ========= ЛОГИКА БОТА ===========
+# Часовой пояс: установим, например, для Екатеринбурга (UTC+5)
+ekb_tz = ZoneInfo("Asia/Yekaterinburg")
 
+# Целевое время (здесь указано как локальное время Екатеринбурга)
+TARGET_DATETIME = datetime.datetime(2025, 7, 1, 23, 59, 0, tzinfo=ekb_tz)
+
+UPDATE_INTERVAL = 60  # Интервал обновления (сек)
+BAR_LENGTH = 16       # Длина прогресс-бара
+
+###############################################################################
+# ЛОГИКА БОТА: команды и обработчики
+###############################################################################
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "Привет! Я бот для счётчика сообщений.\n\n"
@@ -49,7 +72,7 @@ async def start_actions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if "my_count" not in context.bot_data:
         context.bot_data["my_count"] = 0
     context.bot_data["thread_id"] = thread_id
-    # Сохраним также chat_id для обновления сообщения
+    # Сохраняем chat_id для обновления сообщения
     context.bot_data["actions_chat_id"] = update.effective_chat.id
 
     text = "Счётчик действий:\n"
@@ -71,8 +94,7 @@ async def count_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if "thread_id" not in context.bot_data:
         return
 
-    thread_id = context.bot_data["thread_id"]
-    if update.message.message_thread_id != thread_id:
+    if update.message.message_thread_id != context.bot_data["thread_id"]:
         return
 
     user_id = update.effective_user.id
@@ -142,15 +164,16 @@ async def edit_count(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await update.message.reply_text(f"Счётчик {target} теперь: {new_val}")
     await update_counter_message(context)
 
-# ========= ЗАПУСК БОТА В РЕЖИМЕ WEBHOOK ===========
+###############################################################################
+# ЗАПУСК БОТА В РЕЖИМЕ WEBHOOK
+###############################################################################
 async def main_bot_webhook():
     if not BOT_TOKEN:
         raise ValueError("BOT_TOKEN не найден в переменных окружения!")
     if not os.getenv("APP_URL"):
         raise ValueError("APP_URL не найден. Укажите публичный URL вашего приложения.")
     
-    # Используем persistence, чтобы сохранять данные между перезапусками
-    from telegram.ext import PicklePersistence
+    # Используем PicklePersistence для сохранения данных между перезапусками
     persistence = PicklePersistence(filepath="bot_data.pickle")
     
     application = ApplicationBuilder().token(BOT_TOKEN).persistence(persistence).build()
