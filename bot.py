@@ -1,9 +1,9 @@
 import asyncio
-import datetime
 import logging
 import sys
+import os
 import nest_asyncio
-import os  # ВАЖНО: чтобы считывать токен из переменных окружения
+from threading import Thread
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -14,33 +14,53 @@ from telegram.ext import (
     ContextTypes
 )
 
-# Если вы на Windows, иногда нужна эта строчка:
+from flask import Flask
+
+###############################################################################
+# 1. Настройка логирования (необязательно)
+###############################################################################
+logging.basicConfig(level=logging.INFO)
+
+###############################################################################
+# 2. Если на Windows, возможно, нужно установить политику цикла
+###############################################################################
 if sys.platform.startswith('win'):
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 nest_asyncio.apply()
 
-# Логирование (можно выключить или оставить)
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
-)
+###############################################################################
+# 3. Чтение токена и ID пользователей из переменных окружения
+#    (или захардкоженных констант, но лучше из env)
+###############################################################################
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+FRIEND_ID = int(os.getenv("FRIEND_ID", "424546089"))  # если хотите читать из env
+MY_ID = int(os.getenv("MY_ID", "1181433072"))         # или захардкодите, если удобно
 
 ###############################################################################
-# Чтение токена из окружения
+# 4. Создаём Flask-приложение для health check
 ###############################################################################
-BOT_TOKEN = os.getenv("BOT_TOKEN")  # НЕ хардкодим
+app = Flask(__name__)
 
-# ID пользователей
-FRIEND_ID = 424546089  # ваш друг
-MY_ID = 1181433072     # вы
+@app.route('/')
+def index():
+    return "OK"
 
+###############################################################################
+# 5. Логика Telegram-бота (команды и хендлеры)
+###############################################################################
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    /start – приветствие
+    """
     await update.message.reply_text(
         "Привет! Я бот для счётчика сообщений.\n\n"
         "Используй /start_actions в нужной теме группы, чтобы бот отследил сообщения."
     )
 
 async def start_actions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    /start_actions – инициализируем счётчики, отправляем сообщение с кнопкой "0/0"
+    """
     thread_id = update.message.message_thread_id
     if thread_id is None:
         await update.message.reply_text(
@@ -68,6 +88,10 @@ async def start_actions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await update.message.reply_text("Счётчик запущен! Теперь я буду считать сообщения в этой теме.")
 
 async def count_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Считаем сообщения в выбранной теме
+    """
+    # Проверяем, инициализирован ли счётчик
     if "thread_id" not in context.bot_data:
         return
 
@@ -108,19 +132,42 @@ async def count_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     except Exception as e:
         logging.error(f"Не удалось обновить сообщение-счётчик: {e}")
 
-async def main() -> None:
+###############################################################################
+# 6. Функция для запуска Telegram-бота (polling) в асинхронном режиме
+###############################################################################
+async def main_bot():
     if not BOT_TOKEN:
-        raise ValueError("Токен бота не найден в переменных окружения!")
-
+        raise ValueError("BOT_TOKEN не найдено в переменных окружения!")
     application = ApplicationBuilder().token(BOT_TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("start_actions", start_actions))
-
     msg_handler = MessageHandler(filters.TEXT & (~filters.COMMAND), count_messages)
     application.add_handler(msg_handler)
 
     await application.run_polling()
 
+def run_bot():
+    """
+    Запускает main_bot() в event loop
+    """
+    asyncio.run(main_bot())
+
+###############################################################################
+# 7. Функция для запуска Flask-сервера на нужном порту (health check)
+###############################################################################
+def run_flask():
+    port = int(os.environ.get("PORT", "8000"))
+    app.run(host="0.0.0.0", port=port)
+
+###############################################################################
+# 8. Точка входа
+###############################################################################
 if __name__ == "__main__":
-    asyncio.run(main())
+    # Запускаем бота (polling) в другом потоке
+    from threading import Thread
+    t = Thread(target=run_bot)
+    t.start()
+
+    # Запускаем Flask (блокирующе)
+    run_flask()
