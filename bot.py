@@ -13,13 +13,15 @@ from telegram.ext import (
     filters,
     ContextTypes,
 )
-from flask import Flask, request  # Добавлен Flask для обработки запросов
+from quart import Quart, request
+from hypercorn.asyncio import serve
+from hypercorn.config import Config
 
-# Настройка продвинутого логирования
+# Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler()]  # Убран FileHandler для Koyeb
+    handlers=[logging.StreamHandler()]
 )
 logger = logging.getLogger(__name__)
 
@@ -27,17 +29,19 @@ if sys.platform.startswith('win'):
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 nest_asyncio.apply()
 
-# Инициализация Flask приложения
-app = Flask(__name__)
+# Инициализация Quart приложения
+app = Quart(__name__)
 
+# Конфигурация
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 APP_URL = os.getenv("APP_URL")
 PORT = int(os.getenv("PORT", "8000"))
+SECRET_TOKEN = os.getenv("SECRET_TOKEN")
 
 FRIEND_ID = 424546089
 MY_ID = 1181433072
 
-# Хранилище счетчиков в памяти
+# Хранилище данных в памяти
 bot_data = {
     "friend_count": 0,
     "my_count": 0,
@@ -48,15 +52,15 @@ bot_data = {
 
 # Эндпоинт для Health Check
 @app.route('/health')
-def health():
+async def health():
     return 'OK', 200
 
-# Обработчик вебхука от Telegram
+# Обработчик вебхука Telegram
 @app.route('/telegram', methods=['POST'])
-def telegram_webhook():
+async def telegram_webhook():
     try:
-        update = Update.de_json(request.get_json(), application.bot)
-        asyncio.run(application.process_update(update))
+        update = Update.de_json(await request.get_json(), application.bot)
+        await application.process_update(update)
         return 'OK', 200
     except Exception as e:
         logger.error(f"Ошибка обработки вебхука: {str(e)}", exc_info=True)
@@ -79,22 +83,22 @@ async def start_actions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             await update.message.reply_text("Это не тема супергруппы. Используйте /start_actions в теме!")
             return
 
-        if bot_data.get("friend_count") is None:
-            bot_data["friend_count"] = 0
-        if bot_data.get("my_count") is None:
-            bot_data["my_count"] = 0
+        # Инициализация счетчиков
+        bot_data.setdefault("friend_count", 0)
+        bot_data.setdefault("my_count", 0)
 
+        # Обновляем идентификаторы
         bot_data["thread_id"] = thread_id
         bot_data["actions_chat_id"] = update.effective_chat.id
 
-        base_text = "Счётчик действий:\n"
+        # Создаем сообщение со счетчиком
         button_text = f"{bot_data['friend_count']}/{bot_data['my_count']}"
         keyboard = [[InlineKeyboardButton(button_text, callback_data="none")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         sent_msg = await context.bot.send_message(
             chat_id=update.effective_chat.id,
-            text=base_text,
+            text="Счётчик действий:\n",
             reply_markup=reply_markup,
             message_thread_id=thread_id
         )
@@ -122,7 +126,7 @@ async def count_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
         await update_counter_message(context)
     except Exception as e:
-        logger.error(f"Ошибка в обработке сообщения: {str(e)}", exc_info=True)
+        logger.error(f"Ошибка обработки сообщения: {str(e)}", exc_info=True)
 
 async def update_counter_message(context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
@@ -181,49 +185,37 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     if update and isinstance(update, Update):
         logger.error(f"Обновление вызвавшее ошибку: {update.to_dict()}")
 
-async def main_bot_webhook():
-    global application  # Делаем application глобальной для доступа из Flask
+async def main():
+    global application
+    
+    # Инициализация бота
+    application = ApplicationBuilder().token(BOT_TOKEN).build()
+    
+    # Регистрация обработчиков
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("start_actions", start_actions))
+    application.add_handler(CommandHandler("edit_count", edit_count))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, count_messages))
+    application.add_error_handler(error_handler)
 
-    if not BOT_TOKEN:
-        logger.critical("BOT_TOKEN не установлен!")
-        raise ValueError("BOT_TOKEN not set!")
-    if not APP_URL:
-        logger.critical("APP_URL не установлен!")
-        raise ValueError("APP_URL not set!")
-
-    try:
-        application = ApplicationBuilder().token(BOT_TOKEN).build()
-
-        # Хендлеры
-        application.add_handler(CommandHandler("start", start))
-        application.add_handler(CommandHandler("start_actions", start_actions))
-        application.add_handler(CommandHandler("edit_count", edit_count))
-        application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), count_messages))
-        application.add_error_handler(error_handler)
-
-        # Регистрация вебхука
-        await application.bot.set_webhook(
-            url=f"{APP_URL}/telegram",
-            secret_token = os.getenv("SECRET_TOKEN")  # Получаем токен из переменных окружения
-        )
-
-        logger.info(f"Вебхук зарегистрирован: {APP_URL}/telegram")
-        
-    except TelegramError as e:
-        logger.critical(f"Ошибка Telegram API: {str(e)}")
-    except Exception as e:
-        logger.critical(f"Критическая ошибка: {str(e)}", exc_info=True)
+    # Инициализация приложения
+    await application.initialize()
+    
+    # Установка вебхука
+    await application.bot.set_webhook(
+        url=f"{APP_URL}/telegram",
+        secret_token=SECRET_TOKEN
+    )
+    
+    # Запуск Quart через Hypercorn
+    config = Config()
+    config.bind = [f"0.0.0.0:{PORT}"]
+    await serve(app, config)
 
 if __name__ == "__main__":
     try:
-        # Запуск Flask в отдельном потоке
-        from threading import Thread
-        Thread(target=app.run, kwargs={'host': '0.0.0.0', 'port': PORT}).start()
-        
-        # Запуск бота
-        asyncio.run(main_bot_webhook())
-        
+        asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("Бот остановлен пользователем")
+        logger.info("Бот остановлен")
     except Exception as e:
-        logger.critical(f"Непредвиденная ошибка: {str(e)}", exc_info=True)
+        logger.critical(f"Фатальная ошибка: {str(e)}", exc_info=True)
