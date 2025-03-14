@@ -13,21 +13,22 @@ from telegram.ext import (
     filters,
     ContextTypes,
 )
+from flask import Flask, request  # Добавлен Flask для обработки запросов
 
 # Настройка продвинутого логирования
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler('bot_errors.log')
-    ]
+    handlers=[logging.StreamHandler()]  # Убран FileHandler для Koyeb
 )
 logger = logging.getLogger(__name__)
 
 if sys.platform.startswith('win'):
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 nest_asyncio.apply()
+
+# Инициализация Flask приложения
+app = Flask(__name__)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 APP_URL = os.getenv("APP_URL")
@@ -44,6 +45,22 @@ bot_data = {
     "actions_chat_id": None,
     "actions_msg_id": None
 }
+
+# Эндпоинт для Health Check
+@app.route('/health')
+def health():
+    return 'OK', 200
+
+# Обработчик вебхука от Telegram
+@app.route('/telegram', methods=['POST'])
+def telegram_webhook():
+    try:
+        update = Update.de_json(request.get_json(), application.bot)
+        asyncio.run(application.process_update(update))
+        return 'OK', 200
+    except Exception as e:
+        logger.error(f"Ошибка обработки вебхука: {str(e)}", exc_info=True)
+        return 'ERROR', 500
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
@@ -62,13 +79,11 @@ async def start_actions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             await update.message.reply_text("Это не тема супергруппы. Используйте /start_actions в теме!")
             return
 
-        # Инициализация счетчиков только если их нет
         if bot_data.get("friend_count") is None:
             bot_data["friend_count"] = 0
         if bot_data.get("my_count") is None:
             bot_data["my_count"] = 0
 
-        # Обновляем только thread_id и chat_id
         bot_data["thread_id"] = thread_id
         bot_data["actions_chat_id"] = update.effective_chat.id
 
@@ -167,6 +182,8 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
         logger.error(f"Обновление вызвавшее ошибку: {update.to_dict()}")
 
 async def main_bot_webhook():
+    global application  # Делаем application глобальной для доступа из Flask
+
     if not BOT_TOKEN:
         logger.critical("BOT_TOKEN не установлен!")
         raise ValueError("BOT_TOKEN not set!")
@@ -184,15 +201,14 @@ async def main_bot_webhook():
         application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), count_messages))
         application.add_error_handler(error_handler)
 
-        await application.run_webhook(
-            listen="0.0.0.0",
-            port=PORT,
-            webhook_url=f"{APP_URL}/telegram",
-            secret_token='YOUR_SECRET_TOKEN',  # Для безопасности
-            drop_pending_updates=True
+        # Регистрация вебхука
+        await application.bot.set_webhook(
+            url=f"{APP_URL}/telegram",
+            secret_token='YOUR_SECRET_TOKEN'
         )
 
-        logger.info("Бот успешно запущен")
+        logger.info(f"Вебхук зарегистрирован: {APP_URL}/telegram")
+        
     except TelegramError as e:
         logger.critical(f"Ошибка Telegram API: {str(e)}")
     except Exception as e:
@@ -200,7 +216,13 @@ async def main_bot_webhook():
 
 if __name__ == "__main__":
     try:
+        # Запуск Flask в отдельном потоке
+        from threading import Thread
+        Thread(target=app.run, kwargs={'host': '0.0.0.0', 'port': PORT}).start()
+        
+        # Запуск бота
         asyncio.run(main_bot_webhook())
+        
     except KeyboardInterrupt:
         logger.info("Бот остановлен пользователем")
     except Exception as e:
