@@ -204,7 +204,7 @@ async def main_bot_webhook():
         # Регистрация вебхука
         await application.bot.set_webhook(
             url=f"{APP_URL}/telegram",
-            secret_token='YOUR_SECRET_TOKEN'
+            secret_token = os.getenv("SECRET_TOKEN")  # Получаем токен из переменных окружения
         )
 
         logger.info(f"Вебхук зарегистрирован: {APP_URL}/telegram")
