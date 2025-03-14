@@ -2,3 +2,5 @@ python-telegram-bot[webhooks]==20.3
 nest_asyncio
 python-dotenv
 flask>=3.0.2
+quart>=0.18.4
+hypercorn>=0.14.4
