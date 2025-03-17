@@ -1,3 +1,10 @@
+# Добавьте эти строки:
+from supabase import create_client, Client
+import pandas as pd
+import matplotlib.pyplot as plt
+from io import BytesIO
+from datetime import datetime, timedelta
+import numpy as np
 import asyncio
 import logging
 import os
@@ -38,6 +45,10 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 APP_URL = os.getenv("APP_URL")
 PORT = int(os.getenv("PORT", "8000"))
 SECRET_TOKEN = os.getenv("SECRET_TOKEN")
+# Конфигурация Supabase
+SUPABASE_URL = os.getenv("SUPABASE_URL")  # URL вашего проекта Supabase
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")  # Ключ (service_role или anon)
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 FRIEND_ID = 424546089
 MY_ID = 1181433072
@@ -150,6 +161,19 @@ async def count_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         else:
             return
 
+        # Запись в Supabase (добавьте этот блок)
+        user_id = update.effective_user.id
+        today = datetime.now().strftime("%Y-%m-%d")
+
+        # Обновляем счетчик в базе
+        response = supabase.table('actions').upsert({
+            "user_id": user_id,
+            "date": today,
+            "count": 1
+        }, on_conflict="user_id, date").execute()
+
+        logger.info(f"Данные обновлены: {response.data}")
+
         await update_counter_message(context)
     except Exception as e:
         logger.error(f"Ошибка обработки сообщения: {str(e)}", exc_info=True)
@@ -172,6 +196,45 @@ async def update_counter_message(context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.error(f"Не удалось обновить сообщение: {str(e)}")
     except Exception as e:
         logger.error(f"Ошибка в update_counter_message: {str(e)}", exc_info=True)
+
+async def generate_plot(df: pd.DataFrame, period: str) -> BytesIO:
+    plt.style.use('seaborn')
+    fig, ax = plt.subplots(figsize=(12, 6))
+
+    # Группируем данные
+    df['date'] = pd.to_datetime(df['date'])
+    df_grouped = df.groupby(['user_id', 'date'])['count'].sum().unstack(level=0).fillna(0)
+    
+    # Данные для Яна и Егора
+    dates = df_grouped.index
+    yan = df_grouped.get(1181433072, pd.Series(0, index=dates))
+    egor = df_grouped.get(424546089, pd.Series(0, index=dates))
+
+    # Столбчатая диаграмма
+    bar_width = 0.35
+    x = np.arange(len(dates))
+    ax.bar(x - bar_width/2, yan, bar_width, label='Ян', color='#3498db', alpha=0.7)
+    ax.bar(x + bar_width/2, egor, bar_width, label='Егор', color='#2ecc71', alpha=0.7)
+
+    # Линии тренда
+    window = 3
+    ax.plot(x, yan.rolling(window).mean(), color='#2980b9', linestyle='--', label='Тренд Ян')
+    ax.plot(x, egor.rolling(window).mean(), color='#27ae60', linestyle='--', label='Тренд Егор')
+
+    # Настройки графика
+    ax.set_xticks(x)
+    ax.set_xticklabels([d.strftime("%d.%m") for d in dates], rotation=45)
+    ax.set_title("Аналитика действий")
+    ax.set_xlabel("Дата")
+    ax.set_ylabel("Количество действий")
+    ax.legend()
+
+    # Сохраняем в буфер
+    buf = BytesIO()
+    plt.savefig(buf, format='png', bbox_inches='tight', dpi=120)
+    buf.seek(0)
+    plt.close()
+    return buf
 
 async def edit_count(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
@@ -202,6 +265,54 @@ async def edit_count(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     except Exception as e:
         logger.error(f"Ошибка в /edit_count: {str(e)}", exc_info=True)
 
+async def stats_counter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    try:
+        args = context.args
+        period = "week"  # Значение по умолчанию
+        
+        # Парсим аргументы
+        if args:
+            if args[0] in ["week", "month", "all"]:
+                period = args[0]
+            else:
+                try:
+                    start_date = datetime.strptime(args[0], "%Y-%m-%d")
+                    end_date = datetime.strptime(args[1], "%Y-%m-%d") if len(args) > 1 else datetime.now()
+                    period = "custom"
+                except ValueError:
+                    await update.message.reply_text("❌ Некорректный формат даты. Используйте YYYY-MM-DD.")
+                    return
+
+        # Получаем данные из Supabase
+        query = supabase.table('actions').select("*")
+
+        # Фильтруем по периоду
+        today = datetime.now()
+        if period == "week":
+            start_date = today - timedelta(days=7)
+            query = query.gte("date", start_date.strftime("%Y-%m-%d"))
+        elif period == "month":
+            start_date = today.replace(day=1)
+            query = query.gte("date", start_date.strftime("%Y-%m-%d"))
+        elif period == "custom":
+            query = query.gte("date", start_date.strftime("%Y-%m-%d")).lte("date", end_date.strftime("%Y-%m-%d"))
+
+        data = query.execute().data
+        df = pd.DataFrame(data)
+
+        # Генерируем график
+        plot_buf = await generate_plot(df, period)
+        
+        # Отправляем график
+        await context.bot.send_photo(
+            chat_id=update.effective_chat.id,
+            photo=plot_buf,
+            caption=f"📊 Статистика за {period}"
+        )
+
+    except Exception as e:
+        logger.error(f"Ошибка в /stats_counter: {str(e)}", exc_info=True)
+
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.error(f"Ошибка: {context.error}", exc_info=True)
     if isinstance(context.error, TelegramError):
@@ -224,6 +335,7 @@ async def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("start_actions", start_actions))
     application.add_handler(CommandHandler("edit_count", edit_count))
+    application.add_handler(CommandHandler("stats_counter", stats_counter))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, count_messages))
     application.add_error_handler(error_handler)
 
