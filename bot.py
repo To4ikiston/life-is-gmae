@@ -242,6 +242,7 @@ async def count_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def help_counter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.info("Команда /help_counter вызвана")
     help_text = (
         "🛠️ *Помощь по боту-счетчику* 🛠️\n\n"
         "Я помогу отслеживать ваши действия в теме чата. Вот что я умею:\n\n"
