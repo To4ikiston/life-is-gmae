@@ -110,8 +110,8 @@ async def health():
 @app.route('/telegram', methods=['POST'])
 async def telegram_webhook():
     if application is None:
-    logger.error("Бот ещё не инициализирован.")
-    return 'Server Error', 500
+        logger.error("Бот ещё не инициализирован.")
+        return 'Server Error', 500
     # Добавьте проверку токена
     if request.headers.get('X-Telegram-Bot-Api-Secret-Token') != SECRET_TOKEN:
         return 'Forbidden', 403
@@ -192,39 +192,39 @@ async def count_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return
 
         # Увеличиваем счетчик в памяти ОДИН РАЗ
-       async with data_lock:
-            if user_id == FRIEND_ID:
-                bot_data["friend_count"] += 1
-            else:
-                bot_data["my_count"] += 1
+           async with data_lock:
+                if user_id == FRIEND_ID:
+                    bot_data["friend_count"] += 1
+                else:
+                    bot_data["my_count"] += 1
 
         # Пытаемся обновить Supabase
-try:
-    # Сначала пытаемся получить существующую запись для текущего пользователя и даты
-    existing = supabase.table('actions') \
-        .select("count") \
-        .eq("user_id", user_id) \
-        .eq("date", today) \
-        .execute().data
-
-    if existing and len(existing) > 0:
-        # Если запись есть, увеличиваем значение count
-        new_count = existing[0]['count'] + 1
-        response = supabase.table('actions') \
-            .update({"count": new_count}) \
+    try:
+        # Сначала пытаемся получить существующую запись для текущего пользователя и даты
+        existing = supabase.table('actions') \
+            .select("count") \
             .eq("user_id", user_id) \
             .eq("date", today) \
-            .execute()
-    else:
-        # Если записи нет, вставляем новую
-        response = supabase.table('actions') \
-            .insert({"user_id": user_id, "date": today, "count": 1}) \
-            .execute()
+            .execute().data
 
-    if response.error:
-        raise Exception(f"Supabase error: {response.error}")
+        if existing and len(existing) > 0:
+            # Если запись есть, увеличиваем значение count
+            new_count = existing[0]['count'] + 1
+            response = supabase.table('actions') \
+                .update({"count": new_count}) \
+                .eq("user_id", user_id) \
+                .eq("date", today) \
+                .execute()
+        else:
+            # Если записи нет, вставляем новую
+            response = supabase.table('actions') \
+                .insert({"user_id": user_id, "date": today, "count": 1}) \
+                .execute()
 
-except Exception as e:
+        if response.error:
+            raise Exception(f"Supabase error: {response.error}")
+
+    except Exception as e:
     # Откатываем изменения в памяти, если произошла ошибка
     if user_id == FRIEND_ID:
         bot_data["friend_count"] -= 1
@@ -281,18 +281,19 @@ async def update_counter_message(context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.error(f"Ошибка в update_counter_message: {str(e)}", exc_info=True)
 
 async def generate_plot(df: pd.DataFrame, period: str) -> BytesIO:
-    plt.style.use('seaborn')
+    # Устанавливаем стиль оформления графика, можно экспериментировать с вариантами:
+    plt.style.use('seaborn-darkgrid')
     fig, ax = plt.subplots(figsize=(12, 6))
 
     try:
-        # Проверка на пустые данные
         if df.empty:
             ax.text(0.5, 0.5, 'Нет данных за выбранный период', 
-                   ha='center', va='center', fontsize=14)
-            ax.set_title("Аналитика действий")
-            ax.set_xlabel("Дата")
-            ax.set_ylabel("Количество действий")
+                    ha='center', va='center', fontsize=14)
+            ax.set_title("Аналитика действий", fontsize=16)
+            ax.set_xlabel("Дата", fontsize=14)
+            ax.set_ylabel("Количество действий", fontsize=14)
             buf = BytesIO()
+            plt.tight_layout()
             plt.savefig(buf, format='png', bbox_inches='tight', dpi=120)
             buf.seek(0)
             plt.close()
@@ -301,46 +302,47 @@ async def generate_plot(df: pd.DataFrame, period: str) -> BytesIO:
         # Группируем данные
         df['date'] = pd.to_datetime(df['date'])
         df_grouped = df.groupby(['user_id', 'date'])['count'].sum().unstack(level=0).fillna(0)
-        
-        # Получаем все даты в периоде
         all_dates = pd.date_range(df['date'].min(), df['date'].max())
         df_grouped = df_grouped.reindex(all_dates, fill_value=0)
 
-        # Данные для Яна и Егора
         dates = df_grouped.index
-        yan = df_grouped.get(1181433072, pd.Series(0, index=dates))
-        egor = df_grouped.get(424546089, pd.Series(0, index=dates))
+        yan = df_grouped.get(MY_ID, pd.Series(0, index=dates))
+        egor = df_grouped.get(FRIEND_ID, pd.Series(0, index=dates))
 
-        # Столбчатая диаграмма
+        # Построение столбчатой диаграммы
         bar_width = 0.35
         x = np.arange(len(dates))
         ax.bar(x - bar_width/2, yan, bar_width, label='Ян', color='#3498db', alpha=0.7)
         ax.bar(x + bar_width/2, egor, bar_width, label='Егор', color='#2ecc71', alpha=0.7)
 
-        # Линии тренда (только если есть достаточно данных)
+        # Построение линий тренда, если данных достаточно
         if len(dates) >= 3:
             window = min(3, len(dates))
             ax.plot(x, yan.rolling(window).mean(), color='#2980b9', linestyle='--', label='Тренд Ян')
             ax.plot(x, egor.rolling(window).mean(), color='#27ae60', linestyle='--', label='Тренд Егор')
 
-        # Настройки графика
+        # Настройки осей и заголовков
         ax.set_xticks(x)
         ax.set_xticklabels([d.strftime("%d.%m") for d in dates], rotation=45)
-        ax.set_title("Аналитика действий")
-        ax.set_xlabel("Дата")
-        ax.set_ylabel("Количество действий")
+        ax.set_title("Аналитика действий", fontsize=16)
+        ax.set_xlabel("Дата", fontsize=14)
+        ax.set_ylabel("Количество действий", fontsize=14)
         ax.legend()
 
+        # Добавляем сетку для лучшей читаемости
+        ax.grid(True, linestyle='--', alpha=0.7)
+
+        # Автоматическое форматирование подписей дат
+        fig.autofmt_xdate()
+
     except Exception as e:
-        # Очищаем график при ошибках
         ax.clear()
         ax.text(0.5, 0.5, 'Ошибка генерации графика', 
-               ha='center', va='center', fontsize=14, color='red')
+                ha='center', va='center', fontsize=14, color='red')
         logger.error(f"Ошибка генерации графика: {str(e)}")
-
     finally:
-        # Сохраняем в буфер в любом случае
         buf = BytesIO()
+        plt.tight_layout()
         plt.savefig(buf, format='png', bbox_inches='tight', dpi=120)
         buf.seek(0)
         plt.close()
@@ -378,9 +380,9 @@ async def edit_count(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             elif who == "me":
                 bot_data["my_count"] += delta
                 new_val = bot_data["my_count"]
-                else:
-            await update.message.reply_text("Первый аргумент должен быть 'friend' или 'me'.")
-            return
+            else:
+                await update.message.reply_text("Первый аргумент должен быть 'friend' или 'me'.")
+                return
 
         await update.message.reply_text(f"Счётчик {who} теперь: {new_val}")
         await update_counter_message(context)
@@ -411,19 +413,6 @@ async def stats_counter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                     return
 
         # Получаем данные из Supabase
-        query = supabase.table('actions').select("*")
-
-        # Фильтруем по периоду
-        today = datetime.now()
-        if period == "week":
-            start_date = today - timedelta(days=7)
-            query = query.gte("date", start_date.strftime("%Y-%m-%d"))
-        elif period == "month":
-            start_date = today.replace(day=1)
-            query = query.gte("date", start_date.strftime("%Y-%m-%d"))
-        elif period == "custom":
-            query = query.gte("date", start_date.strftime("%Y-%m-%d")).lte("date", end_date.strftime("%Y-%m-%d"))
-
         query = supabase.table("actions")
         # Фильтруем по периоду
         today = datetime.now()
@@ -438,6 +427,7 @@ async def stats_counter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
         # Фильтрация по ID пользователей
         query = query.in_("user_id", [FRIEND_ID, MY_ID])
+        # Получаем данные и преобразуем в DataFrame
         data = query.select("user_id, date, count").execute().data
         df = pd.DataFrame(data)
 
