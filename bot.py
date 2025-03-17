@@ -255,12 +255,12 @@ async def help_counter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "▫️ `/stats_counter week` — График за неделю.\n\n"
         "📌 _Чтобы команды работали, бот должен быть админом в группе._"
     )
-    try:
-        await update.effective_message.reply_text(
-            help_text,
-            parse_mode="Markdown",
-            disable_web_page_preview=True
-        )
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=help_text,
+        parse_mode="Markdown",
+        disable_web_page_preview=True
+    )
     except Exception as e:
         logger.error(f"Ошибка в /help_counter: {str(e)}", exc_info=True)
 
@@ -390,6 +390,7 @@ async def edit_count(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         logger.error(f"Ошибка в /edit_count: {str(e)}", exc_info=True)
 
 async def stats_counter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.info("Команда /stats_counter вызвана")
     try:
         args = context.args
         period = "week"
@@ -403,12 +404,18 @@ async def stats_counter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                     end_date = datetime.strptime(args[1], "%Y-%m-%d") if len(args) > 1 else datetime.now()
                     
                     if end_date < start_date:
-                        await update.effective_message.reply_text("❌ Конечная дата не может быть раньше начальной.")
+                        await context.bot.send_message(
+                            chat_id=update.effective_chat.id,
+                            text="❌ Конечная дата не может быть раньше начальной."
+                        )
                         return
                         
                     period = "custom"
                 except ValueError:
-                    await update.effective_message.reply_text("❌ Некорректный формат даты. Используйте YYYY-MM-DD.")
+                    await context.bot.send_message(
+                        chat_id=update.effective_chat.id,
+                        text="❌ Некорректный формат даты. Используйте YYYY-MM-DD."
+                    )
                     return
 
         # Получаем данные из Supabase
