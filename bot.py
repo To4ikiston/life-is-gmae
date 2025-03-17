@@ -187,51 +187,52 @@ async def count_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         user_id = update.effective_user.id
         today = datetime.now().strftime("%Y-%m-%d")
 
-        # Определяем пользователя и увеличиваем счетчик
+        # Определяем пользователя и увеличиваем счётчик
         if user_id not in [FRIEND_ID, MY_ID]:
             return
 
-        # Увеличиваем счетчик в памяти ОДИН РАЗ
-           async with data_lock:
-                if user_id == FRIEND_ID:
-                    bot_data["friend_count"] += 1
-                else:
-                    bot_data["my_count"] += 1
+        # Увеличиваем счётчик в памяти ОДИН РАЗ
+        async with data_lock:
+            if user_id == FRIEND_ID:
+                bot_data["friend_count"] += 1
+            else:
+                bot_data["my_count"] += 1
 
         # Пытаемся обновить Supabase
-    try:
-        # Сначала пытаемся получить существующую запись для текущего пользователя и даты
-        existing = supabase.table('actions') \
-            .select("count") \
-            .eq("user_id", user_id) \
-            .eq("date", today) \
-            .execute().data
-
-        if existing and len(existing) > 0:
-            # Если запись есть, увеличиваем значение count
-            new_count = existing[0]['count'] + 1
-            response = supabase.table('actions') \
-                .update({"count": new_count}) \
+        try:
+            # Сначала пытаемся получить существующую запись для текущего пользователя и даты
+            existing = supabase.table('actions') \
+                .select("count") \
                 .eq("user_id", user_id) \
                 .eq("date", today) \
-                .execute()
-        else:
-            # Если записи нет, вставляем новую
-            response = supabase.table('actions') \
-                .insert({"user_id": user_id, "date": today, "count": 1}) \
-                .execute()
+                .execute().data
 
-        if response.error:
-            raise Exception(f"Supabase error: {response.error}")
+            if existing and len(existing) > 0:
+                # Если запись есть, увеличиваем значение count
+                new_count = existing[0]['count'] + 1
+                response = supabase.table('actions') \
+                    .update({"count": new_count}) \
+                    .eq("user_id", user_id) \
+                    .eq("date", today) \
+                    .execute()
+            else:
+                # Если записи нет, вставляем новую
+                response = supabase.table('actions') \
+                    .insert({"user_id": user_id, "date": today, "count": 1}) \
+                    .execute()
 
-    except Exception as e:
-    # Откатываем изменения в памяти, если произошла ошибка
-    if user_id == FRIEND_ID:
-        bot_data["friend_count"] -= 1
-    else:
-        bot_data["my_count"] -= 1
-    logger.error(f"Ошибка Supabase: {str(e)}")
-    raise
+            if response.error:
+                raise Exception(f"Supabase error: {response.error}")
+
+        except Exception as e:
+            # Откатываем изменения в памяти, если произошла ошибка
+            async with data_lock:
+                if user_id == FRIEND_ID:
+                    bot_data["friend_count"] -= 1
+                else:
+                    bot_data["my_count"] -= 1
+            logger.error(f"Ошибка Supabase: {str(e)}")
+            raise
 
         await update_counter_message(context)
 
