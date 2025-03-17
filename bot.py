@@ -16,7 +16,8 @@ from telegram.ext import (
 from quart import Quart, request
 from hypercorn.asyncio import serve
 from hypercorn.config import Config
-
+# Добавьте новый импорт
+from tenacity import retry, stop_after_attempt, wait_exponential
 # Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
@@ -50,6 +51,16 @@ bot_data = {
     "actions_msg_id": None
 }
 
+# Вставьте это после импортов, но перед другими функциями
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
+async def safe_edit_message(context, chat_id, msg_id, text, reply_markup):
+    await context.bot.edit_message_text(
+        chat_id=chat_id,
+        message_id=msg_id,
+        text=text,
+        reply_markup=reply_markup
+    )
+
 # Эндпоинт для Health Check
 @app.route('/health')
 async def health():
@@ -58,13 +69,24 @@ async def health():
 # Обработчик вебхука Telegram
 @app.route('/telegram', methods=['POST'])
 async def telegram_webhook():
+    # Добавьте проверку токена
+    if request.headers.get('X-Telegram-Bot-Api-Secret-Token') != SECRET_TOKEN:
+        return 'Forbidden', 403
+        
     try:
-        update = Update.de_json(await request.get_json(), application.bot)
+        json_data = await request.get_json()
+        update = Update.de_json(json_data, application.bot)
         await application.process_update(update)
         return 'OK', 200
+    except BadRequest as e:
+        logger.error(f"Неверный запрос: {str(e)}")
+        return 'Bad Request', 400
+    except TelegramError as e:
+        logger.error(f"Ошибка Telegram API: {str(e)}")
+        return 'Error', 500
     except Exception as e:
-        logger.error(f"Ошибка обработки вебхука: {str(e)}", exc_info=True)
-        return 'ERROR', 500
+        logger.error(f"Неизвестная ошибка: {str(e)}", exc_info=True)
+        return 'Server Error', 500
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
@@ -110,6 +132,10 @@ async def start_actions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def count_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
+        # Добавьте эту проверку (ШАГ 1)
+        if update.message is None:
+            return
+
         if not bot_data["thread_id"]:
             return
 
@@ -128,6 +154,7 @@ async def count_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     except Exception as e:
         logger.error(f"Ошибка обработки сообщения: {str(e)}", exc_info=True)
 
+
 async def update_counter_message(context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         chat_id = bot_data["actions_chat_id"]
@@ -140,12 +167,7 @@ async def update_counter_message(context: ContextTypes.DEFAULT_TYPE) -> None:
         keyboard = [[InlineKeyboardButton(button_text, callback_data="none")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
-        await context.bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=msg_id,
-            text="Счётчик действий:\n",
-            reply_markup=reply_markup
-        )
+        await safe_edit_message(context, chat_id, msg_id, "Счётчик действий:\n", reply_markup)
     except BadRequest as e:
         logger.error(f"Не удалось обновить сообщение: {str(e)}")
     except Exception as e:
@@ -181,15 +203,22 @@ async def edit_count(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         logger.error(f"Ошибка в /edit_count: {str(e)}", exc_info=True)
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.error(f"Ошибка обработки обновления: {context.error}", exc_info=True)
-    if update and isinstance(update, Update):
-        logger.error(f"Обновление вызвавшее ошибку: {update.to_dict()}")
+    logger.error(f"Ошибка: {context.error}", exc_info=True)
+    if isinstance(context.error, TelegramError):
+        logger.error(f"Детали ошибки Telegram: {context.error.message}")
 
 async def main():
     global application
     
     # Инициализация бота
-    application = ApplicationBuilder().token(BOT_TOKEN).build()
+    application = (
+    ApplicationBuilder()
+        .token(BOT_TOKEN)
+        .read_timeout(30)  # Добавьте эту строку
+        .write_timeout(30)  # И эту
+        .build()
+    )
+
     
     # Регистрация обработчиков
     application.add_handler(CommandHandler("start", start))
