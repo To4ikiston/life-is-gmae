@@ -10,7 +10,8 @@ import logging
 import os
 import sys
 import nest_asyncio
-
+from functools import lru_cache
+import json
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import BadRequest, TelegramError
 from telegram.ext import (
@@ -25,6 +26,8 @@ from hypercorn.asyncio import serve
 from hypercorn.config import Config
 # Добавьте новый импорт
 from tenacity import retry, stop_after_attempt, wait_exponential
+application = None
+
 # Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
@@ -45,10 +48,10 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 APP_URL = os.getenv("APP_URL")
 PORT = int(os.getenv("PORT", "8000"))
 SECRET_TOKEN = os.getenv("SECRET_TOKEN")
+
 # Конфигурация Supabase
-SUPABASE_URL = os.getenv("SUPABASE_URL")  # URL вашего проекта Supabase
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")  # Ключ (service_role или anon)
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 FRIEND_ID = 424546089
 MY_ID = 1181433072
@@ -61,6 +64,32 @@ bot_data = {
     "actions_chat_id": None,
     "actions_msg_id": None
 }
+data_lock = asyncio.Lock()
+try:
+    # 2.1. Пытаемся подключиться к Supabase
+    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    
+    # 2.2. Проверяем подключение (делаем тестовый запрос)
+    test = supabase.table("actions").select("user_id").limit(1).execute()
+    logger.info("✅ Успешное подключение к Supabase")
+
+except Exception as e:
+    # 2.3. Если произошла ошибка:
+    logger.critical(f"❌ Ошибка подключения к Supabase: {str(e)}")
+    sys.exit(1)  # Завершаем работу бота
+
+
+
+async def load_initial_data():
+    """Загружает данные из Supabase при старте бота"""
+    try:
+        data = supabase.table("actions").select("*").execute().data
+        bot_data["friend_count"] = sum(row["count"] for row in data if row["user_id"] == FRIEND_ID)
+        bot_data["my_count"] = sum(row["count"] for row in data if row["user_id"] == MY_ID)
+        logger.info(f"Данные восстановлены: Ян={bot_data['my_count']}, Егор={bot_data['friend_count']}")
+    except Exception as e:
+        logger.error(f"Ошибка загрузки данных: {str(e)}")
+
 
 # Вставьте это после импортов, но перед другими функциями
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
@@ -80,6 +109,9 @@ async def health():
 # Обработчик вебхука Telegram
 @app.route('/telegram', methods=['POST'])
 async def telegram_webhook():
+    if application is None:
+    logger.error("Бот ещё не инициализирован.")
+    return 'Server Error', 500
     # Добавьте проверку токена
     if request.headers.get('X-Telegram-Bot-Api-Secret-Token') != SECRET_TOKEN:
         return 'Forbidden', 403
@@ -143,7 +175,6 @@ async def start_actions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def count_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
-        # Добавьте эту проверку (ШАГ 1)
         if update.message is None:
             return
 
@@ -154,30 +185,82 @@ async def count_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return
 
         user_id = update.effective_user.id
-        if user_id == FRIEND_ID:
-            bot_data["friend_count"] += 1
-        elif user_id == MY_ID:
-            bot_data["my_count"] += 1
-        else:
-            return
-
-        # Запись в Supabase (добавьте этот блок)
-        user_id = update.effective_user.id
         today = datetime.now().strftime("%Y-%m-%d")
 
-        # Обновляем счетчик в базе
-        response = supabase.table('actions').upsert({
-            "user_id": user_id,
-            "date": today,
-            "count": 1
-        }, on_conflict="user_id, date").execute()
+        # Определяем пользователя и увеличиваем счетчик
+        if user_id not in [FRIEND_ID, MY_ID]:
+            return
 
-        logger.info(f"Данные обновлены: {response.data}")
+        # Увеличиваем счетчик в памяти ОДИН РАЗ
+       async with data_lock:
+            if user_id == FRIEND_ID:
+                bot_data["friend_count"] += 1
+            else:
+                bot_data["my_count"] += 1
+
+        # Пытаемся обновить Supabase
+try:
+    # Сначала пытаемся получить существующую запись для текущего пользователя и даты
+    existing = supabase.table('actions') \
+        .select("count") \
+        .eq("user_id", user_id) \
+        .eq("date", today) \
+        .execute().data
+
+    if existing and len(existing) > 0:
+        # Если запись есть, увеличиваем значение count
+        new_count = existing[0]['count'] + 1
+        response = supabase.table('actions') \
+            .update({"count": new_count}) \
+            .eq("user_id", user_id) \
+            .eq("date", today) \
+            .execute()
+    else:
+        # Если записи нет, вставляем новую
+        response = supabase.table('actions') \
+            .insert({"user_id": user_id, "date": today, "count": 1}) \
+            .execute()
+
+    if response.error:
+        raise Exception(f"Supabase error: {response.error}")
+
+except Exception as e:
+    # Откатываем изменения в памяти, если произошла ошибка
+    if user_id == FRIEND_ID:
+        bot_data["friend_count"] -= 1
+    else:
+        bot_data["my_count"] -= 1
+    logger.error(f"Ошибка Supabase: {str(e)}")
+    raise
 
         await update_counter_message(context)
+
     except Exception as e:
         logger.error(f"Ошибка обработки сообщения: {str(e)}", exc_info=True)
 
+
+
+async def help_counter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    help_text = (
+        "🛠️ *Помощь по боту-счетчику* 🛠️\n\n"
+        "Я помогу отслеживать ваши действия в теме чата. Вот что я умею:\n\n"
+        
+        "🔹 `/start_actions` — Запустить счетчик в теме группы.\n"
+        "🔹 `/edit_count <friend|me> <число>` — Изменить счетчик вручную.\n"
+        "🔹 `/stats_counter <период>` — Показать статистику (неделя/месяц/все время).\n"
+        "🔹 `/help_counter` — Это сообщение.\n\n"
+        
+        "*Примеры:*\n"
+        "▫️ `/edit_count me +5` — Увеличить ваш счетчик на 5.\n"
+        "▫️ `/stats_counter week` — График за неделю.\n\n"
+        "📌 _Чтобы команды работали, бот должен быть админом в группе._"
+    )
+    
+    await update.message.reply_text(
+        help_text,
+        parse_mode="Markdown",
+        disable_web_page_preview=True
+    )
 
 async def update_counter_message(context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
@@ -201,40 +284,78 @@ async def generate_plot(df: pd.DataFrame, period: str) -> BytesIO:
     plt.style.use('seaborn')
     fig, ax = plt.subplots(figsize=(12, 6))
 
-    # Группируем данные
-    df['date'] = pd.to_datetime(df['date'])
-    df_grouped = df.groupby(['user_id', 'date'])['count'].sum().unstack(level=0).fillna(0)
-    
-    # Данные для Яна и Егора
-    dates = df_grouped.index
-    yan = df_grouped.get(1181433072, pd.Series(0, index=dates))
-    egor = df_grouped.get(424546089, pd.Series(0, index=dates))
+    try:
+        # Проверка на пустые данные
+        if df.empty:
+            ax.text(0.5, 0.5, 'Нет данных за выбранный период', 
+                   ha='center', va='center', fontsize=14)
+            ax.set_title("Аналитика действий")
+            ax.set_xlabel("Дата")
+            ax.set_ylabel("Количество действий")
+            buf = BytesIO()
+            plt.savefig(buf, format='png', bbox_inches='tight', dpi=120)
+            buf.seek(0)
+            plt.close()
+            return buf
 
-    # Столбчатая диаграмма
-    bar_width = 0.35
-    x = np.arange(len(dates))
-    ax.bar(x - bar_width/2, yan, bar_width, label='Ян', color='#3498db', alpha=0.7)
-    ax.bar(x + bar_width/2, egor, bar_width, label='Егор', color='#2ecc71', alpha=0.7)
+        # Группируем данные
+        df['date'] = pd.to_datetime(df['date'])
+        df_grouped = df.groupby(['user_id', 'date'])['count'].sum().unstack(level=0).fillna(0)
+        
+        # Получаем все даты в периоде
+        all_dates = pd.date_range(df['date'].min(), df['date'].max())
+        df_grouped = df_grouped.reindex(all_dates, fill_value=0)
 
-    # Линии тренда
-    window = 3
-    ax.plot(x, yan.rolling(window).mean(), color='#2980b9', linestyle='--', label='Тренд Ян')
-    ax.plot(x, egor.rolling(window).mean(), color='#27ae60', linestyle='--', label='Тренд Егор')
+        # Данные для Яна и Егора
+        dates = df_grouped.index
+        yan = df_grouped.get(1181433072, pd.Series(0, index=dates))
+        egor = df_grouped.get(424546089, pd.Series(0, index=dates))
 
-    # Настройки графика
-    ax.set_xticks(x)
-    ax.set_xticklabels([d.strftime("%d.%m") for d in dates], rotation=45)
-    ax.set_title("Аналитика действий")
-    ax.set_xlabel("Дата")
-    ax.set_ylabel("Количество действий")
-    ax.legend()
+        # Столбчатая диаграмма
+        bar_width = 0.35
+        x = np.arange(len(dates))
+        ax.bar(x - bar_width/2, yan, bar_width, label='Ян', color='#3498db', alpha=0.7)
+        ax.bar(x + bar_width/2, egor, bar_width, label='Егор', color='#2ecc71', alpha=0.7)
 
-    # Сохраняем в буфер
-    buf = BytesIO()
-    plt.savefig(buf, format='png', bbox_inches='tight', dpi=120)
-    buf.seek(0)
-    plt.close()
-    return buf
+        # Линии тренда (только если есть достаточно данных)
+        if len(dates) >= 3:
+            window = min(3, len(dates))
+            ax.plot(x, yan.rolling(window).mean(), color='#2980b9', linestyle='--', label='Тренд Ян')
+            ax.plot(x, egor.rolling(window).mean(), color='#27ae60', linestyle='--', label='Тренд Егор')
+
+        # Настройки графика
+        ax.set_xticks(x)
+        ax.set_xticklabels([d.strftime("%d.%m") for d in dates], rotation=45)
+        ax.set_title("Аналитика действий")
+        ax.set_xlabel("Дата")
+        ax.set_ylabel("Количество действий")
+        ax.legend()
+
+    except Exception as e:
+        # Очищаем график при ошибках
+        ax.clear()
+        ax.text(0.5, 0.5, 'Ошибка генерации графика', 
+               ha='center', va='center', fontsize=14, color='red')
+        logger.error(f"Ошибка генерации графика: {str(e)}")
+
+    finally:
+        # Сохраняем в буфер в любом случае
+        buf = BytesIO()
+        plt.savefig(buf, format='png', bbox_inches='tight', dpi=120)
+        buf.seek(0)
+        plt.close()
+        return buf
+
+@lru_cache(maxsize=10)
+async def generate_plot_cached(df_hash: str, period: str) -> BytesIO:
+    """Кэшированная версия генерации графиков"""
+    try:
+        # Конвертируем JSON обратно в DataFrame
+        df = pd.read_json(df_hash, orient='split')
+        return await generate_plot(df, period)
+    except Exception as e:
+        logger.error(f"Ошибка в кэшированной функции: {str(e)}")
+        raise
 
 async def edit_count(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
@@ -250,13 +371,14 @@ async def edit_count(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             await update.message.reply_text("Второй аргумент должен быть числом.")
             return
 
-        if who == "friend":
-            bot_data["friend_count"] += delta
-            new_val = bot_data["friend_count"]
-        elif who == "me":
-            bot_data["my_count"] += delta
-            new_val = bot_data["my_count"]
-        else:
+        async with data_lock:
+            if who == "friend":
+                bot_data["friend_count"] += delta
+                new_val = bot_data["friend_count"]
+            elif who == "me":
+                bot_data["my_count"] += delta
+                new_val = bot_data["my_count"]
+                else:
             await update.message.reply_text("Первый аргумент должен быть 'friend' или 'me'.")
             return
 
@@ -268,9 +390,8 @@ async def edit_count(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 async def stats_counter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         args = context.args
-        period = "week"  # Значение по умолчанию
+        period = "week"
         
-        # Парсим аргументы
         if args:
             if args[0] in ["week", "month", "all"]:
                 period = args[0]
@@ -278,6 +399,12 @@ async def stats_counter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 try:
                     start_date = datetime.strptime(args[0], "%Y-%m-%d")
                     end_date = datetime.strptime(args[1], "%Y-%m-%d") if len(args) > 1 else datetime.now()
+                    
+                    # Добавьте проверку (ШАГ 1)
+                    if end_date < start_date:
+                        await update.message.reply_text("❌ Конечная дата не может быть раньше начальной.")
+                        return
+                        
                     period = "custom"
                 except ValueError:
                     await update.message.reply_text("❌ Некорректный формат даты. Используйте YYYY-MM-DD.")
@@ -297,11 +424,28 @@ async def stats_counter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         elif period == "custom":
             query = query.gte("date", start_date.strftime("%Y-%m-%d")).lte("date", end_date.strftime("%Y-%m-%d"))
 
-        data = query.execute().data
+        query = supabase.table("actions")
+        # Фильтруем по периоду
+        today = datetime.now()
+        if period == "week":
+            start_date = today - timedelta(days=7)
+            query = query.gte("date", start_date.strftime("%Y-%m-%d"))
+        elif period == "month":
+            start_date = today.replace(day=1)
+            query = query.gte("date", start_date.strftime("%Y-%m-%d"))
+        elif period == "custom":
+            query = query.gte("date", start_date.strftime("%Y-%m-%d")).lte("date", end_date.strftime("%Y-%m-%d"))
+
+        # Фильтрация по ID пользователей
+        query = query.in_("user_id", [FRIEND_ID, MY_ID])
+        data = query.select("user_id, date, count").execute().data
         df = pd.DataFrame(data)
 
-        # Генерируем график
-        plot_buf = await generate_plot(df, period)
+        # Конвертируем DataFrame в JSON-строку для кэширования
+        df_hash = df.to_json(orient='split')
+
+        # Получаем график из кэша или генерируем новый
+        plot_buf = await generate_plot_cached(df_hash, period)
         
         # Отправляем график
         await context.bot.send_photo(
@@ -330,12 +474,14 @@ async def main():
         .build()
     )
 
+    await load_initial_data()  # Загрузка данных из Supabase
     
     # Регистрация обработчиков
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("start_actions", start_actions))
     application.add_handler(CommandHandler("edit_count", edit_count))
     application.add_handler(CommandHandler("stats_counter", stats_counter))
+    application.add_handler(CommandHandler("help_counter", help_counter))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, count_messages))
     application.add_error_handler(error_handler)
 
