@@ -133,7 +133,7 @@ async def telegram_webhook():
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
-        await update.message.reply_text(
+        await update.effective_message.reply_text(
             "Привет! Я бот для счётчика сообщений.\n\n"
             "Используй /start_actions в нужной теме группы, чтобы бот отследил сообщения.\n"
             "Используй /edit_count <friend|me> <число> чтобы изменить счётчик вручную."
@@ -246,23 +246,23 @@ async def help_counter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     help_text = (
         "🛠️ *Помощь по боту-счетчику* 🛠️\n\n"
         "Я помогу отслеживать ваши действия в теме чата. Вот что я умею:\n\n"
-        
-        "🔹 `/start_actions` — Запустить счетчик в теме группы.\n"
-        "🔹 `/edit_count <friend|me> <число>` — Изменить счетчик вручную.\n"
+        "🔹 `/start_actions` — Запустить счётчик в теме группы.\n"
+        "🔹 `/edit_count <friend|me> <число>` — Изменить счётчик вручную.\n"
         "🔹 `/stats_counter <период>` — Показать статистику (неделя/месяц/все время).\n"
         "🔹 `/help_counter` — Это сообщение.\n\n"
-        
         "*Примеры:*\n"
-        "▫️ `/edit_count me +5` — Увеличить ваш счетчик на 5.\n"
+        "▫️ `/edit_count me +5` — Увеличить ваш счётчик на 5.\n"
         "▫️ `/stats_counter week` — График за неделю.\n\n"
         "📌 _Чтобы команды работали, бот должен быть админом в группе._"
     )
-    
-    await update.message.reply_text(
-        help_text,
-        parse_mode="Markdown",
-        disable_web_page_preview=True
-    )
+    try:
+        await update.effective_message.reply_text(
+            help_text,
+            parse_mode="Markdown",
+            disable_web_page_preview=True
+        )
+    except Exception as e:
+        logger.error(f"Ошибка в /help_counter: {str(e)}", exc_info=True)
 
 async def update_counter_message(context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
@@ -365,14 +365,14 @@ async def edit_count(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     try:
         args = context.args
         if len(args) < 2:
-            await update.message.reply_text("Формат: /edit_count <friend|me> <число>")
+            await update.effective_message.reply_text("Формат: /edit_count <friend|me> <число>")
             return
 
         who = args[0].lower()
         try:
             delta = int(args[1])
         except ValueError:
-            await update.message.reply_text("Второй аргумент должен быть числом.")
+            await update.effective_message.reply_text("Второй аргумент должен быть числом.")
             return
 
         async with data_lock:
@@ -381,7 +381,7 @@ async def edit_count(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             elif who == "me":
                 bot_data["my_count"] += delta
             else:
-                await update.message.reply_text("Первый аргумент должен быть 'friend' или 'me'.")
+                await update.effective_message.reply_text("Первый аргумент должен быть 'friend' или 'me'.")
                 return
 
         # Вместо отправки отдельного сообщения обновляем inline-кнопку
@@ -402,19 +402,17 @@ async def stats_counter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                     start_date = datetime.strptime(args[0], "%Y-%m-%d")
                     end_date = datetime.strptime(args[1], "%Y-%m-%d") if len(args) > 1 else datetime.now()
                     
-                    # Добавьте проверку (ШАГ 1)
                     if end_date < start_date:
-                        await update.message.reply_text("❌ Конечная дата не может быть раньше начальной.")
+                        await update.effective_message.reply_text("❌ Конечная дата не может быть раньше начальной.")
                         return
                         
                     period = "custom"
                 except ValueError:
-                    await update.message.reply_text("❌ Некорректный формат даты. Используйте YYYY-MM-DD.")
+                    await update.effective_message.reply_text("❌ Некорректный формат даты. Используйте YYYY-MM-DD.")
                     return
 
         # Получаем данные из Supabase
         query = supabase.table("actions")
-        # Фильтруем по периоду
         today = datetime.now()
         if period == "week":
             start_date = today - timedelta(days=7)
@@ -425,19 +423,12 @@ async def stats_counter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         elif period == "custom":
             query = query.gte("date", start_date.strftime("%Y-%m-%d")).lte("date", end_date.strftime("%Y-%m-%d"))
 
-        # Фильтрация по ID пользователей
         query = query.in_("user_id", [FRIEND_ID, MY_ID])
-        # Получаем данные и преобразуем в DataFrame
         data = query.select("user_id, date, count").execute().data
         df = pd.DataFrame(data)
-
-        # Конвертируем DataFrame в JSON-строку для кэширования
         df_hash = df.to_json(orient='split')
-
-        # Получаем график из кэша или генерируем новый
         plot_buf = await generate_plot_cached(df_hash, period)
         
-        # Отправляем график
         await context.bot.send_photo(
             chat_id=update.effective_chat.id,
             photo=plot_buf,
