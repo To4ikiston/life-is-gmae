@@ -246,15 +246,15 @@ async def help_counter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         logger.info("Команда /help_counter вызвана")
         help_text = (
             "🛠️ *Помощь по боту-счетчику* 🛠️\n\n"
-            "Я помогу отслеживать ваши действия в теме чата. Вот что я умею:\n\n"
-            "🔹 `/start_actions` — Запустить счётчик в теме группы.\n"
-            "🔹 `/edit_count <friend|me> <число>` — Изменить счётчик вручную.\n"
-            "🔹 `/stats_counter <период>` — Показать статистику (неделя/месяц/все время).\n"
-            "🔹 `/help_counter` — Это сообщение.\n\n"
-            "*Примеры:*\n"
-            "▫️ `/edit_count me +5` — Увеличить ваш счётчик на 5.\n"
-            "▫️ `/stats_counter week` — График за неделю.\n\n"
-            "📌 _Чтобы команды работали, бот должен быть админом в группе._"
+            "Доступные команды:\n\n"
+            "🔹 `/start_actions` — Запустить счётчик в теме группы. Обязательно вызывайте эту команду в теме, иначе бот не сможет отслеживать сообщения.\n\n"
+            "🔹 `/edit_count <friend|me> <число>` — Изменить счётчик вручную. Пример: `/edit_count me +5` увеличит ваш счётчик на 5.\n\n"
+            "🔹 `/stats_counter <период>` — Показать статистику действий.\n"
+            "    • Введите `week` для статистики за последнюю неделю, `month` — за текущий месяц, или `all` — за все время.\n"
+            "    • Для произвольного периода введите две даты через пробел в формате `YYYY-MM-DD`, например:\n"
+            "      `/stats_counter 2023-01-01 2023-01-31`.\n\n"
+            "🔹 `/help_counter` — Вывести это сообщение помощи.\n\n"
+            "📌 _Примечание:_ Если бот используется в группе, убедитесь, что режим приватности отключён, или отправляйте команды с упоминанием имени бота."
         )
         await context.bot.send_message(
             chat_id=update.effective_chat.id,
@@ -391,35 +391,36 @@ async def edit_count(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         logger.error(f"Ошибка в /edit_count: {str(e)}", exc_info=True)
 
 async def stats_counter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.info("Команда /stats_counter вызвана")
     try:
+        logger.info("Команда /stats_counter вызвана")
         args = context.args
-        period = "week"
-        
+        period = "week"  # По умолчанию
+
+        # Обработка аргументов
         if args:
+            # Если введено "week", "month" или "all"
             if args[0] in ["week", "month", "all"]:
                 period = args[0]
             else:
+                # Попытка распарсить даты
                 try:
                     start_date = datetime.strptime(args[0], "%Y-%m-%d")
                     end_date = datetime.strptime(args[1], "%Y-%m-%d") if len(args) > 1 else datetime.now()
-                    
                     if end_date < start_date:
                         await context.bot.send_message(
                             chat_id=update.effective_chat.id,
                             text="❌ Конечная дата не может быть раньше начальной."
                         )
                         return
-                        
                     period = "custom"
-                except ValueError:
+                except (ValueError, IndexError):
                     await context.bot.send_message(
                         chat_id=update.effective_chat.id,
-                        text="❌ Некорректный формат даты. Используйте YYYY-MM-DD."
+                        text="❌ Некорректный формат даты. Используйте: `/stats_counter YYYY-MM-DD YYYY-MM-DD`"
                     )
                     return
 
-        # Получаем данные из Supabase
+        # Формирование запроса к Supabase
         query = supabase.table("actions")
         today = datetime.now()
         if period == "week":
@@ -428,6 +429,9 @@ async def stats_counter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         elif period == "month":
             start_date = today.replace(day=1)
             query = query.gte("date", start_date.strftime("%Y-%m-%d"))
+        elif period == "all":
+            # Если период "all", фильтрация по дате не применяется
+            pass
         elif period == "custom":
             query = query.gte("date", start_date.strftime("%Y-%m-%d")).lte("date", end_date.strftime("%Y-%m-%d"))
 
@@ -436,13 +440,12 @@ async def stats_counter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         df = pd.DataFrame(data)
         df_hash = df.to_json(orient='split')
         plot_buf = await generate_plot_cached(df_hash, period)
-        
+
         await context.bot.send_photo(
             chat_id=update.effective_chat.id,
             photo=plot_buf,
             caption=f"📊 Статистика за {period}"
         )
-
     except Exception as e:
         logger.error(f"Ошибка в /stats_counter: {str(e)}", exc_info=True)
 
