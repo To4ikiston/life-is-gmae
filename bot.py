@@ -378,15 +378,13 @@ async def edit_count(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         async with data_lock:
             if who == "friend":
                 bot_data["friend_count"] += delta
-                new_val = bot_data["friend_count"]
             elif who == "me":
                 bot_data["my_count"] += delta
-                new_val = bot_data["my_count"]
             else:
                 await update.message.reply_text("Первый аргумент должен быть 'friend' или 'me'.")
                 return
 
-        await update.message.reply_text(f"Счётчик {who} теперь: {new_val}")
+        # Вместо отправки отдельного сообщения обновляем inline-кнопку
         await update_counter_message(context)
     except Exception as e:
         logger.error(f"Ошибка в /edit_count: {str(e)}", exc_info=True)
