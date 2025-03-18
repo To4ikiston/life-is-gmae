@@ -65,7 +65,6 @@ bot_data = {
 }
 data_lock = asyncio.Lock()
 try:
-    # Подключаемся к Supabase
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
     test = supabase.table("actions").select("user_id").limit(1).execute()
     logger.info("✅ Успешное подключение к Supabase")
@@ -74,7 +73,6 @@ except Exception as e:
     sys.exit(1)
 
 async def load_initial_data():
-    """Загружает данные из Supabase при старте бота"""
     try:
         logger.info("Начало загрузки начальных данных из Supabase")
         data = supabase.table("actions").select("*").execute().data
@@ -104,7 +102,7 @@ async def catch_all(path):
     logger.info(f"Получен GET запрос на произвольный путь: /{path}")
     return f"Запрошенный путь: /{path}", 200
 
-# Обработчик вебхука Telegram (для POST-запросов)
+# Обработчик вебхука Telegram (POST)
 @app.route('/telegram', methods=['POST'])
 @app.route('/telegram/', methods=['POST'])
 async def telegram_webhook():
@@ -133,14 +131,13 @@ async def telegram_webhook():
         logger.error(f"Неизвестная ошибка в вебхуке: {str(e)}", exc_info=True)
         return 'Server Error', 500
 
-# Тестовый GET-обработчик для /telegram
+# Тестовые GET-обработчики для /telegram и /test_webhook
 @app.route('/telegram', methods=['GET'])
 @app.route('/telegram/', methods=['GET'])
 async def telegram_webhook_get():
     logger.info("Получен GET запрос на /telegram")
     return "Telegram GET endpoint работает", 200
 
-# Тестовый маршрут /test_webhook
 @app.route('/test_webhook', methods=['GET'])
 async def test_webhook():
     logger.info("Получен GET запрос на /test_webhook")
@@ -171,7 +168,6 @@ async def start_actions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
         bot_data.setdefault("friend_count", 0)
         bot_data.setdefault("my_count", 0)
-
         bot_data["thread_id"] = thread_id
         bot_data["actions_chat_id"] = update.effective_chat.id
 
@@ -188,7 +184,6 @@ async def start_actions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         bot_data["actions_msg_id"] = sent_msg.message_id
         logger.info(f"Сообщение со счётчиком отправлено, ID: {sent_msg.message_id}")
 
-        # Отправляем подтверждение в том же треде
         await context.bot.send_message(
             chat_id=update.effective_chat.id,
             text="Счётчик запущен!",
@@ -204,18 +199,15 @@ async def count_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if update.message is None:
             logger.debug("update.message отсутствует")
             return
-
         if not bot_data["thread_id"]:
             logger.debug("thread_id не установлен")
             return
-
         if update.message.message_thread_id != bot_data["thread_id"]:
             logger.debug("Сообщение не из нужной темы")
             return
 
         user_id = update.effective_user.id
         today = datetime.now().strftime("%Y-%m-%d")
-
         if user_id not in [FRIEND_ID, MY_ID]:
             logger.debug(f"Сообщение от неизвестного пользователя: {user_id}")
             return
@@ -245,7 +237,6 @@ async def count_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 response = supabase.table('actions') \
                     .insert({"user_id": user_id, "date": today, "count": 1}) \
                     .execute()
-
             logger.info("Данные в Supabase обновлены")
         except Exception as e:
             async with data_lock:
@@ -261,7 +252,7 @@ async def count_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     except Exception as e:
         logger.error(f"Ошибка обработки сообщения: {str(e)}", exc_info=True)
 
-# Команда /help_counter – исправлено для отправки в том же треде
+# Команда /help_counter – отправка в том же треде
 async def help_counter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("Команда /help_counter вызвана")
     try:
@@ -418,7 +409,8 @@ async def stats_counter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     try:
         args = context.args
         period = "week"  # По умолчанию
-
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        # Определяем период и задаем фильтрацию вручную на стороне Python
         if args:
             if args[0] in ["week", "month", "all"]:
                 period = args[0]
@@ -440,16 +432,28 @@ async def stats_counter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                     )
                     return
 
-        query = supabase.table("actions")
-        today = datetime.now()
-        # Для упрощения пока убираем фильтрацию по дате, чтобы избежать ошибок с методами .gte()/.lte()
-        # Если нужна фильтрация по дате, потребуется использовать другой метод согласно документации вашего клиента.
-        # Применяем фильтр по user_id через метод .or_
-        query = query.or_(f"user_id.eq.{FRIEND_ID},user_id.eq.{MY_ID}")
+        # Получаем все записи за нужный период – поскольку методы фильтрации вызывают ошибки,
+        # выполняем фильтрацию на стороне Python.
+        all_data = supabase.table("actions").select("user_id, date, count").execute().data
+        logger.info(f"Общее количество записей: {len(all_data)}")
 
-        data = query.select("user_id, date, count").execute().data
-        logger.info(f"Данные для графика получены, записей: {len(data)}")
-        df = pd.DataFrame(data)
+        # Фильтруем по дате, если период не "all"
+        if period == "week":
+            start_date = datetime.now() - timedelta(days=7)
+            filtered = [rec for rec in all_data if datetime.strptime(rec["date"], "%Y-%m-%d") >= start_date]
+        elif period == "month":
+            start_date = datetime.now().replace(day=1)
+            filtered = [rec for rec in all_data if datetime.strptime(rec["date"], "%Y-%m-%d") >= start_date]
+        elif period == "custom":
+            filtered = [rec for rec in all_data if datetime.strptime(rec["date"], "%Y-%m-%d") >= start_date and datetime.strptime(rec["date"], "%Y-%m-%d") <= end_date]
+        else:
+            filtered = all_data
+
+        # Фильтруем записи по user_id
+        filtered = [rec for rec in filtered if rec["user_id"] in [FRIEND_ID, MY_ID]]
+        logger.info(f"Записей после фильтрации: {len(filtered)}")
+
+        df = pd.DataFrame(filtered)
         df_hash = df.to_json(orient='split')
         plot_buf = await generate_plot_cached(df_hash, period)
 
@@ -481,7 +485,7 @@ async def main():
             .build()
     )
 
-    await load_initial_data()  # Загрузка данных из Supabase
+    await load_initial_data()
     logger.info("Начальные данные загружены")
 
     # Регистрация обработчиков
@@ -494,19 +498,16 @@ async def main():
     application.add_error_handler(error_handler)
     logger.info("Обработчики зарегистрированы")
 
-    # Инициализация и запуск бота
     await application.initialize()
-    await application.start()  # Запуск фоновых задач бота
+    await application.start()
     logger.info("Бот запущен")
 
-    # Установка вебхука
     await application.bot.set_webhook(
         url=f"{APP_URL}/telegram",
         secret_token=SECRET_TOKEN
     )
     logger.info("Вебхук установлен")
 
-    # Запуск Quart через Hypercorn
     config = Config()
     config.bind = [f"0.0.0.0:{PORT}"]
     logger.info(f"Запуск сервера на порту {PORT}")
