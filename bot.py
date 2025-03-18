@@ -85,12 +85,13 @@ async def load_initial_data():
         logger.error(f"Ошибка загрузки данных: {str(e)}", exc_info=True)
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-async def safe_edit_message(context, chat_id, msg_id, text):
+async def safe_edit_message(context, chat_id, msg_id, text, reply_markup=None):
     logger.info(f"Редактирование сообщения {msg_id} в чате {chat_id}")
     await context.bot.edit_message_text(
         chat_id=chat_id,
         message_id=msg_id,
-        text=text
+        text=text,
+        reply_markup=reply_markup
     )
 
 @app.route('/health')
@@ -170,12 +171,12 @@ async def start_actions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         bot_data["thread_id"] = thread_id
         bot_data["actions_chat_id"] = update.effective_chat.id
 
-        # Отправляем сообщение-счётчик с INLINE кнопкой, на которой отображается счёт
+        # Отправляем сообщение с текстом и единственной неактивной кнопкой, отображающей счёт
         counter_text = f"{bot_data['friend_count']}/{bot_data['my_count']}"
         keyboard = [[InlineKeyboardButton(counter_text, callback_data="none")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         msg = await update.effective_message.reply_text(
-            f"Счётчик: {counter_text}",
+            "Счётчик действий",
             reply_markup=reply_markup,
             message_thread_id=thread_id
         )
@@ -265,7 +266,7 @@ async def help_counter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     except Exception as e:
         logger.error(f"Ошибка в /help_counter: {str(e)}", exc_info=True)
 
-# Функция обновления сообщения-счётчика (с одной кнопкой, которая лишь отображает счёт)
+# Функция обновления сообщения-счётчика (с одной кнопкой, отображающей счёт)
 async def update_counter_message(context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("Обновление сообщения-счётчика")
     try:
@@ -373,13 +374,13 @@ async def generate_plot(df: pd.DataFrame, period: str) -> BytesIO:
 
         bar_width = 0.35
         x = np.arange(len(dates))
-        ax.bar(x - bar_width/2, yan, bar_width, label='Ян', color='#3498db', alpha=0.7)
-        ax.bar(x + bar_width/2, egor, bar_width, label='Друг', color='#2ecc71', alpha=0.7)
+        ax.bar(x - bar_width/2, yan, bar_width, label='Мой счёт', color='#3498db', alpha=0.7)
+        ax.bar(x + bar_width/2, egor, bar_width, label='Счёт друга', color='#2ecc71', alpha=0.7)
 
         if len(dates) >= 3:
             window = min(3, len(dates))
-            ax.plot(x, yan.rolling(window).mean(), color='#2980b9', linestyle='--', label='Тренд Ян')
-            ax.plot(x, egor.rolling(window).mean(), color='#27ae60', linestyle='--', label='Тренд Друг')
+            ax.plot(x, yan.rolling(window).mean(), color='#2980b9', linestyle='--', label='Тренд мой')
+            ax.plot(x, egor.rolling(window).mean(), color='#27ae60', linestyle='--', label='Тренд друга')
 
         ax.set_xticks(x)
         ax.set_xticklabels([d.strftime("%d.%m") for d in dates], rotation=45)
@@ -430,6 +431,7 @@ async def main():
     await load_initial_data()
     logger.info("Начальные данные загружены")
 
+    # Регистрируем слэш-команды
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("start_actions", start_actions))
     application.add_handler(CommandHandler("edit_count", edit_count))
