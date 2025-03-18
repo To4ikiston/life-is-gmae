@@ -374,13 +374,13 @@ async def generate_plot(df: pd.DataFrame, period: str) -> BytesIO:
 
         bar_width = 0.35
         x = np.arange(len(dates))
-        ax.bar(x - bar_width/2, yan, bar_width, label='Мой счёт', color='#3498db', alpha=0.7)
-        ax.bar(x + bar_width/2, egor, bar_width, label='Счёт друга', color='#2ecc71', alpha=0.7)
+        ax.bar(x - bar_width/2, yan, bar_width, label='Ян', color='#3498db', alpha=0.7)
+        ax.bar(x + bar_width/2, egor, bar_width, label='Егор', color='#2ecc71', alpha=0.7)
 
         if len(dates) >= 3:
             window = min(3, len(dates))
-            ax.plot(x, yan.rolling(window).mean(), color='#2980b9', linestyle='--', label='Тренд мой')
-            ax.plot(x, egor.rolling(window).mean(), color='#27ae60', linestyle='--', label='Тренд друга')
+            ax.plot(x, yan.rolling(window).mean(), color='#2980b9', linestyle='--', label='Тренд Ян')
+            ax.plot(x, egor.rolling(window).mean(), color='#27ae60', linestyle='--', label='Тренд Егор')
 
         ax.set_xticks(x)
         ax.set_xticklabels([d.strftime("%d.%m") for d in dates], rotation=45)
