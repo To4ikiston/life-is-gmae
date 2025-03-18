@@ -321,6 +321,27 @@ async def help_counter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     except Exception as e:
         logger.error(f"Ошибка в /help_counter: {str(e)}", exc_info=True)
 
+async def update_counter_message(context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.info("Обновление сообщения-счётчика")
+    try:
+        chat_id = bot_data["actions_chat_id"]
+        msg_id = bot_data["actions_msg_id"]
+        if not chat_id or not msg_id:
+            logger.warning("Не установлены chat_id или msg_id для обновления")
+            return
+
+        button_text = f"{bot_data['friend_count']}/{bot_data['my_count']}"
+        keyboard = [[InlineKeyboardButton(button_text, callback_data="none")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        # Обновляем сообщение-счётчик с новым текстом
+        await safe_edit_message(context, chat_id, msg_id, f"Счётчик: {button_text}", reply_markup)
+        logger.info("Сообщение-счётчик успешно обновлено")
+    except BadRequest as e:
+        logger.error(f"Не удалось обновить сообщение: {str(e)}")
+    except Exception as e:
+        logger.error(f"Ошибка в update_counter_message: {str(e)}", exc_info=True)
+
 async def count_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("Входящее сообщение для подсчёта получено")
     try:
