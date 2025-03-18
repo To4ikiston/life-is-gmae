@@ -307,7 +307,7 @@ async def update_counter_message(context: ContextTypes.DEFAULT_TYPE) -> None:
 # Функция генерации графика
 async def generate_plot(df: pd.DataFrame, period: str) -> BytesIO:
     logger.info("Начало генерации графика")
-    plt.style.use('seaborn-darkgrid')
+    # plt.style.use('seaborn-darkgrid')
     fig, ax = plt.subplots(figsize=(12, 6))
     try:
         if df.empty:
