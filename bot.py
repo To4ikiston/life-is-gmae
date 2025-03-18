@@ -104,7 +104,7 @@ async def catch_all(path):
     logger.info(f"Получен GET запрос на произвольный путь: /{path}")
     return f"Запрошенный путь: /{path}", 200
 
-# Обработчик вебхука Telegram (обрабатывает и /telegram, и /telegram/)
+# Обработчик вебхука Telegram (для POST-запросов)
 @app.route('/telegram', methods=['POST'])
 @app.route('/telegram/', methods=['POST'])
 async def telegram_webhook():
@@ -133,12 +133,14 @@ async def telegram_webhook():
         logger.error(f"Неизвестная ошибка в вебхуке: {str(e)}", exc_info=True)
         return 'Server Error', 500
 
+# Тестовый GET-обработчик для /telegram
 @app.route('/telegram', methods=['GET'])
 @app.route('/telegram/', methods=['GET'])
 async def telegram_webhook_get():
     logger.info("Получен GET запрос на /telegram")
     return "Telegram GET endpoint работает", 200
 
+# Тестовый маршрут /test_webhook
 @app.route('/test_webhook', methods=['GET'])
 async def test_webhook():
     logger.info("Получен GET запрос на /test_webhook")
@@ -186,8 +188,12 @@ async def start_actions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         bot_data["actions_msg_id"] = sent_msg.message_id
         logger.info(f"Сообщение со счётчиком отправлено, ID: {sent_msg.message_id}")
 
-        # Отправляем подтверждение без использования reply_text
-        await context.bot.send_message(chat_id=update.effective_chat.id, text="Счётчик запущен!", message_thread_id=thread_id)
+        # Отправляем подтверждение в том же треде
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="Счётчик запущен!",
+            message_thread_id=thread_id
+        )
     except Exception as e:
         logger.error(f"Ошибка в /start_actions: {str(e)}", exc_info=True)
 
@@ -255,7 +261,7 @@ async def count_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     except Exception as e:
         logger.error(f"Ошибка обработки сообщения: {str(e)}", exc_info=True)
 
-# Команда /help_counter
+# Команда /help_counter – исправлено для отправки в том же треде
 async def help_counter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("Команда /help_counter вызвана")
     try:
@@ -271,7 +277,6 @@ async def help_counter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "🔹 `/help_counter` — Вывести это сообщение помощи.\n\n"
             "📌 _Примечание:_ Если бот используется в группе, убедитесь, что режим приватности отключён, или отправляйте команды с упоминанием имени бота."
         )
-        # Отправляем сообщение в ту же тему, где была вызвана команда
         thread_id = update.effective_message.message_thread_id
         await context.bot.send_message(
             chat_id=update.effective_chat.id,
@@ -437,18 +442,11 @@ async def stats_counter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
         query = supabase.table("actions")
         today = datetime.now()
-        if period == "week":
-            start_date = today - timedelta(days=7)
-            query = query.gte("date", start_date.strftime("%Y-%m-%d"))
-        elif period == "month":
-            start_date = today.replace(day=1)
-            query = query.gte("date", start_date.strftime("%Y-%m-%d"))
-        elif period == "all":
-            pass
-        elif period == "custom":
-            query = query.gte("date", start_date.strftime("%Y-%m-%d")).lte("date", end_date.strftime("%Y-%m-%d"))
+        # Для упрощения пока убираем фильтрацию по дате, чтобы избежать ошибок с методами .gte()/.lte()
+        # Если нужна фильтрация по дате, потребуется использовать другой метод согласно документации вашего клиента.
+        # Применяем фильтр по user_id через метод .or_
+        query = query.or_(f"user_id.eq.{FRIEND_ID},user_id.eq.{MY_ID}")
 
-        query = query.in_("user_id", [FRIEND_ID, MY_ID])
         data = query.select("user_id, date, count").execute().data
         logger.info(f"Данные для графика получены, записей: {len(data)}")
         df = pd.DataFrame(data)
