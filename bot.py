@@ -137,6 +137,13 @@ async def telegram_webhook():
         logger.error(f"Неизвестная ошибка в вебхуке: {str(e)}", exc_info=True)
         return 'Server Error', 500
 
+@app.route('/telegram', methods=['GET'])
+@app.route('/telegram/', methods=['GET'])
+async def telegram_webhook_get():
+    logger.info("Получен GET запрос на /telegram")
+    return "Telegram GET endpoint работает", 200
+
+
 # Обработчик команды /start с логированием
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("Команда /start вызвана")
