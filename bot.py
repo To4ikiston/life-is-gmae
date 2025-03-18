@@ -108,6 +108,7 @@ async def health():
 
 # Обработчик вебхука Telegram с добавленным логированием
 @app.route('/telegram', methods=['POST'])
+@app.route('/telegram/', methods=['POST'])
 async def telegram_webhook():
     logger.info("Получен запрос на /telegram")
     if application is None:
