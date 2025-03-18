@@ -1,6 +1,8 @@
 from supabase import create_client, Client
 import pandas as pd
 import matplotlib.pyplot as plt
+import seaborn as sns
+sns.set_style('darkgrid')
 from io import BytesIO
 from datetime import datetime, timedelta
 import numpy as np
@@ -24,6 +26,7 @@ from quart import Quart, request, Response
 from hypercorn.asyncio import serve
 from hypercorn.config import Config
 from tenacity import retry, stop_after_attempt, wait_exponential
+
 
 application = None
 
