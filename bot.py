@@ -106,6 +106,12 @@ async def health():
     logger.info("Health check вызван")
     return 'OK', 200
 
+@app.route('/<path:path>', methods=['GET'])
+async def catch_all(path):
+    logger.info(f"Получен GET запрос на произвольный путь: /{path}")
+    return f"Запрошенный путь: /{path}", 200
+
+
 # Обработчик вебхука Telegram с добавленным логированием
 @app.route('/telegram', methods=['POST'])
 @app.route('/telegram/', methods=['POST'])
