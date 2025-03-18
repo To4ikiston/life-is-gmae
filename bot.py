@@ -143,6 +143,10 @@ async def telegram_webhook_get():
     logger.info("Получен GET запрос на /telegram")
     return "Telegram GET endpoint работает", 200
 
+@app.route('/test_webhook', methods=['GET'])
+async def test_webhook():
+    logger.info("Получен GET запрос на /test_webhook")
+    return "Test webhook работает", 200
 
 # Обработчик команды /start с логированием
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
