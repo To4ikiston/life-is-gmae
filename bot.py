@@ -13,13 +13,12 @@ import sys
 import nest_asyncio
 from functools import lru_cache
 import json
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update
 from telegram.error import BadRequest, TelegramError
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
-    CallbackQueryHandler,
     filters,
     ContextTypes,
 )
@@ -86,13 +85,12 @@ async def load_initial_data():
         logger.error(f"Ошибка загрузки данных: {str(e)}", exc_info=True)
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-async def safe_edit_message(context, chat_id, msg_id, text, reply_markup):
+async def safe_edit_message(context, chat_id, msg_id, text):
     logger.info(f"Редактирование сообщения {msg_id} в чате {chat_id}")
     await context.bot.edit_message_text(
         chat_id=chat_id,
         message_id=msg_id,
-        text=text,
-        reply_markup=reply_markup
+        text=text
     )
 
 @app.route('/health')
@@ -138,43 +136,33 @@ async def test_webhook():
     logger.info("Получен GET запрос на /test_webhook")
     return "Test webhook работает", 200
 
-# ================== Интерфейс через кнопки ==================
+# ----------------- Команды через слеш -----------------
 
-# Главное меню (отправляется при /start)
+# /start – выводит приветственное сообщение и список команд
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("Команда /start вызвана")
     try:
-        main_menu_buttons = [
-            [InlineKeyboardButton("Запустить счётчик", callback_data="start_actions")],
-            [InlineKeyboardButton("Изменить счётчик", callback_data="edit_count_menu")],
-            [InlineKeyboardButton("Статистика", callback_data="stats_menu")],
-            [InlineKeyboardButton("Помощь", callback_data="help")]
-        ]
-        keyboard = InlineKeyboardMarkup(main_menu_buttons)
-        await update.effective_message.reply_text(
-            "Привет! Я бот-счётчик. Выберите действие:",
-            reply_markup=keyboard
+        text = (
+            "Привет! Я бот-счётчик.\n\n"
+            "Доступные команды:\n"
+            "• /start_actions – запустить счётчик (обязательно в теме супергруппы)\n"
+            "• /edit_count <friend|me> <число> – изменить счётчик вручную\n"
+            "• /stats_counter [период] – показать статистику (week, month, all)\n"
+            "• /help_counter – помощь"
         )
-        logger.info("Главное меню отправлено")
+        await update.effective_message.reply_text(text)
+        logger.info("Приветственное сообщение отправлено")
     except Exception as e:
         logger.error(f"Ошибка в /start: {str(e)}", exc_info=True)
 
-# Команда "Запустить счётчик": отправка отдельного сообщения-счётчика
+# /start_actions – запускает счётчик
 async def start_actions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.info("Команда 'Запустить счётчик' вызвана")
+    logger.info("Команда /start_actions вызвана")
     try:
-        # Получаем thread_id из callback или сообщения
-        thread_id = None
-        if update.callback_query:
-            thread_id = update.callback_query.message.message_thread_id
-        elif update.message:
-            thread_id = update.message.message_thread_id
+        thread_id = update.message.message_thread_id if update.message else None
         if thread_id is None:
-            logger.warning("Команда 'Запустить счётчик' должна вызываться в теме супергруппы")
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text="Это не тема супергруппы. Используйте эту команду в теме!"
-            )
+            logger.warning("Команда /start_actions должна вызываться в теме супергруппы")
+            await update.effective_message.reply_text("Это не тема супергруппы. Используйте эту команду в теме!")
             return
 
         bot_data.setdefault("friend_count", 0)
@@ -183,344 +171,16 @@ async def start_actions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         bot_data["actions_chat_id"] = update.effective_chat.id
 
         counter_text = f"{bot_data['friend_count']}/{bot_data['my_count']}"
-        keyboard = [[InlineKeyboardButton(counter_text, callback_data="none")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-
-        counter_msg = await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text=f"Счётчик: {counter_text}",
-            reply_markup=reply_markup,
+        msg = await update.effective_message.reply_text(
+            f"Счётчик: {counter_text}",
             message_thread_id=thread_id
         )
-        bot_data["actions_msg_id"] = counter_msg.message_id
-        logger.info(f"Сообщение-счётчик отправлено, ID: {counter_msg.message_id}")
+        bot_data["actions_msg_id"] = msg.message_id
+        logger.info(f"Сообщение-счётчик отправлено, ID: {msg.message_id}")
     except Exception as e:
-        logger.error(f"Ошибка в 'Запустить счётчик': {str(e)}", exc_info=True)
+        logger.error(f"Ошибка в /start_actions: {str(e)}", exc_info=True)
 
-# Меню изменения счётчика: редактирование inline-сообщения
-async def edit_count_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.info("Показываю меню изменения счётчика")
-    try:
-        edit_menu_buttons = [
-            [InlineKeyboardButton("Мой счёт +1", callback_data="edit_me_+1"),
-             InlineKeyboardButton("Мой счёт -1", callback_data="edit_me_-1")],
-            [InlineKeyboardButton("Счёт друга +1", callback_data="edit_friend_+1"),
-             InlineKeyboardButton("Счёт друга -1", callback_data="edit_friend_-1")]
-        ]
-        keyboard = InlineKeyboardMarkup(edit_menu_buttons)
-        # Редактируем текущее сообщение, чтобы не создавать новое
-        await update.callback_query.edit_message_text(
-            "Выберите изменение счётчика:",
-            reply_markup=keyboard
-        )
-    except Exception as e:
-        logger.error(f"Ошибка в меню изменения счётчика: {str(e)}", exc_info=True)
-
-# Обработка изменения счётчика (нажатие кнопок +1/–1)
-async def process_edit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    try:
-        data = update.callback_query.data  # например, "edit_me_+1"
-        parts = data.split("_")
-        target = parts[1]  # "me" или "friend"
-        delta = int(parts[2])
-        async with data_lock:
-            if target == "me":
-                bot_data["my_count"] += delta
-            elif target == "friend":
-                bot_data["friend_count"] += delta
-        await update_counter_message(context)
-        # Вместо отправки нового сообщения просто отвечаем на callback
-        await update.callback_query.answer(text="Счёт обновлён")
-    except Exception as e:
-        logger.error(f"Ошибка в изменении счётчика: {str(e)}", exc_info=True)
-
-# Меню статистики: редактирование сообщения
-async def stats_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.info("Показываю меню статистики")
-    try:
-        stats_menu_buttons = [
-            [InlineKeyboardButton("За неделю", callback_data="stats_week")],
-            [InlineKeyboardButton("За месяц", callback_data="stats_month")],
-            [InlineKeyboardButton("За всё время", callback_data="stats_all")],
-            [InlineKeyboardButton("Указать период вручную", callback_data="stats_custom")]
-        ]
-        keyboard = InlineKeyboardMarkup(stats_menu_buttons)
-        await update.callback_query.edit_message_text(
-            "Выберите период для статистики:",
-            reply_markup=keyboard
-        )
-    except Exception as e:
-        logger.error(f"Ошибка в меню статистики: {str(e)}", exc_info=True)
-
-# Статистика: получение данных и отправка графика в том же треде
-async def stats_counter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.info("Команда /stats_counter вызвана")
-    try:
-        args = context.args
-        period = "week"
-        if args:
-            period = args[0]
-
-        all_data = supabase.table("actions").select("user_id, date, count").execute().data
-        logger.info(f"Общее количество записей: {len(all_data)}")
-        if period == "week":
-            start_date = datetime.now() - timedelta(days=7)
-            filtered = [rec for rec in all_data if datetime.strptime(rec["date"], "%Y-%m-%d") >= start_date]
-        elif period == "month":
-            start_date = datetime.now().replace(day=1)
-            filtered = [rec for rec in all_data if datetime.strptime(rec["date"], "%Y-%m-%d") >= start_date]
-        elif period == "custom":
-            # При выборе custom отправляем инструкцию
-            await update.callback_query.edit_message_text("Введите период в формате: YYYY-MM-DD YYYY-MM-DD")
-            return
-        else:
-            filtered = all_data
-
-        filtered = [rec for rec in filtered if rec["user_id"] in [FRIEND_ID, MY_ID]]
-        logger.info(f"Записей после фильтрации: {len(filtered)}")
-        df = pd.DataFrame(filtered)
-        df_hash = df.to_json(orient='split')
-        plot_buf = await generate_plot_cached(df_hash, period)
-
-        # Редактируем сообщение, добавляя график – так не создается новый поток
-        await update.callback_query.edit_message_text("График формируется...")
-        await context.bot.send_photo(
-            chat_id=update.callback_query.message.chat.id,
-            photo=plot_buf,
-            caption=f"📊 Статистика за {period}",
-            message_thread_id=update.callback_query.message.message_thread_id
-        )
-        logger.info("Фото со статистикой отправлено")
-    except Exception as e:
-        logger.error(f"Ошибка в /stats_counter: {str(e)}", exc_info=True)
-
-async def help_counter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.info("Команда /help_counter вызвана")
-    try:
-        help_text = (
-            "🛠️ *Помощь по боту-счетчику* 🛠️\n\n"
-            "• *Запустить счётчик:* Нажмите кнопку «Запустить счётчик» в главном меню.\n"
-            "• *Изменить счётчик:* Нажмите кнопку «Изменить счётчик» и выберите нужное изменение.\n"
-            "• *Статистика:* Нажмите кнопку «Статистика» и выберите период для отображения статистики.\n"
-            "• *Помощь:* Отображает это сообщение.\n\n"
-            "📌 _Примечание:_ Если бот используется в группе, убедитесь, что режим приватности отключён, или отправляйте команды с упоминанием имени бота."
-        )
-        thread_id = None
-        if update.callback_query:
-            thread_id = update.callback_query.message.message_thread_id
-        elif update.message:
-            thread_id = update.message.message_thread_id
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text=help_text,
-            parse_mode="Markdown",
-            disable_web_page_preview=True,
-            message_thread_id=thread_id
-        )
-        logger.info("Ответ на /help_counter отправлен")
-    except Exception as e:
-        logger.error(f"Ошибка в /help_counter: {str(e)}", exc_info=True)
-
-async def update_counter_message(context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.info("Обновление сообщения-счётчика")
-    try:
-        chat_id = bot_data["actions_chat_id"]
-        msg_id = bot_data["actions_msg_id"]
-        if not chat_id or not msg_id:
-            logger.warning("Не установлены chat_id или msg_id для обновления")
-            return
-
-        button_text = f"{bot_data['friend_count']}/{bot_data['my_count']}"
-        keyboard = [[InlineKeyboardButton(button_text, callback_data="none")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-
-        # Обновляем сообщение-счётчик с новым текстом
-        await safe_edit_message(context, chat_id, msg_id, f"Счётчик: {button_text}", reply_markup)
-        logger.info("Сообщение-счётчик успешно обновлено")
-    except BadRequest as e:
-        logger.error(f"Не удалось обновить сообщение: {str(e)}")
-    except Exception as e:
-        logger.error(f"Ошибка в update_counter_message: {str(e)}", exc_info=True)
-
-async def count_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.info("Входящее сообщение для подсчёта получено")
-    try:
-        if update.message is None:
-            logger.debug("update.message отсутствует")
-            return
-        if not bot_data["thread_id"]:
-            logger.debug("thread_id не установлен")
-            return
-        if update.message.message_thread_id != bot_data["thread_id"]:
-            logger.debug("Сообщение не из нужной темы")
-            return
-
-        user_id = update.effective_user.id
-        today = datetime.now().strftime("%Y-%m-%d")
-        if user_id not in [FRIEND_ID, MY_ID]:
-            logger.debug(f"Сообщение от неизвестного пользователя: {user_id}")
-            return
-
-        async with data_lock:
-            if user_id == FRIEND_ID:
-                bot_data["friend_count"] += 1
-            else:
-                bot_data["my_count"] += 1
-            logger.info(f"Обновлены счётчики: Ян={bot_data['my_count']}, Егор={bot_data['friend_count']}")
-
-        try:
-            existing = supabase.table('actions') \
-                .select("count") \
-                .eq("user_id", user_id) \
-                .eq("date", today) \
-                .execute().data
-            if existing and len(existing) > 0:
-                new_count = existing[0]['count'] + 1
-                _ = supabase.table('actions') \
-                    .update({"count": new_count}) \
-                    .eq("user_id", user_id) \
-                    .eq("date", today) \
-                    .execute()
-            else:
-                _ = supabase.table('actions') \
-                    .insert({"user_id": user_id, "date": today, "count": 1}) \
-                    .execute()
-            logger.info("Данные в Supabase обновлены")
-        except Exception as e:
-            async with data_lock:
-                if user_id == FRIEND_ID:
-                    bot_data["friend_count"] -= 1
-                else:
-                    bot_data["my_count"] -= 1
-            logger.error(f"Ошибка Supabase: {str(e)}")
-            raise
-
-        await update_counter_message(context)
-        logger.info("Сообщение с обновленным счётчиком отправлено")
-    except Exception as e:
-        logger.error(f"Ошибка обработки сообщения: {str(e)}", exc_info=True)
-
-async def generate_plot(df: pd.DataFrame, period: str) -> BytesIO:
-    logger.info("Начало генерации графика")
-    fig, ax = plt.subplots(figsize=(12, 6))
-    try:
-        if df.empty:
-            ax.text(0.5, 0.5, 'Нет данных за выбранный период', ha='center', va='center', fontsize=14)
-            ax.set_title("Аналитика действий", fontsize=16)
-            ax.set_xlabel("Дата", fontsize=14)
-            ax.set_ylabel("Количество действий", fontsize=14)
-            buf = BytesIO()
-            plt.tight_layout()
-            plt.savefig(buf, format='png', bbox_inches='tight', dpi=120)
-            buf.seek(0)
-            plt.close()
-            logger.info("График с отсутствием данных сгенерирован")
-            return buf
-
-        df['date'] = pd.to_datetime(df['date'])
-        df_grouped = df.groupby(['user_id', 'date'])['count'].sum().unstack(level=0).fillna(0)
-        all_dates = pd.date_range(df['date'].min(), df['date'].max())
-        df_grouped = df_grouped.reindex(all_dates, fill_value=0)
-
-        dates = df_grouped.index
-        yan = df_grouped.get(MY_ID, pd.Series(0, index=dates))
-        egor = df_grouped.get(FRIEND_ID, pd.Series(0, index=dates))
-
-        bar_width = 0.35
-        x = np.arange(len(dates))
-        ax.bar(x - bar_width/2, yan, bar_width, label='Ян', color='#3498db', alpha=0.7)
-        ax.bar(x + bar_width/2, egor, bar_width, label='Егор', color='#2ecc71', alpha=0.7)
-
-        if len(dates) >= 3:
-            window = min(3, len(dates))
-            ax.plot(x, yan.rolling(window).mean(), color='#2980b9', linestyle='--', label='Тренд Ян')
-            ax.plot(x, egor.rolling(window).mean(), color='#27ae60', linestyle='--', label='Тренд Егор')
-
-        ax.set_xticks(x)
-        ax.set_xticklabels([d.strftime("%d.%m") for d in dates], rotation=45)
-        ax.set_title("Аналитика действий", fontsize=16)
-        ax.set_xlabel("Дата", fontsize=14)
-        ax.set_ylabel("Количество действий", fontsize=14)
-        ax.legend()
-        ax.grid(True, linestyle='--', alpha=0.7)
-        fig.autofmt_xdate()
-    except Exception as e:
-        ax.clear()
-        ax.text(0.5, 0.5, 'Ошибка генерации графика', ha='center', va='center', fontsize=14, color='red')
-        logger.error(f"Ошибка генерации графика: {str(e)}")
-    finally:
-        buf = BytesIO()
-        plt.tight_layout()
-        plt.savefig(buf, format='png', bbox_inches='tight', dpi=120)
-        buf.seek(0)
-        plt.close()
-        logger.info("График сгенерирован")
-        return buf
-
-@lru_cache(maxsize=10)
-async def generate_plot_cached(df_hash: str, period: str) -> BytesIO:
-    logger.info("Вызов кэшированной функции генерации графика")
-    try:
-        df = pd.read_json(df_hash, orient='split')
-        return await generate_plot(df, period)
-    except Exception as e:
-        logger.error(f"Ошибка в кэшированной функции: {str(e)}")
-        raise
-
-# Обработчик callback-запросов
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    await query.answer()  # отвечаем на callback
-    data = query.data
-    logger.info(f"Нажата кнопка: {data}")
-    # Получаем thread_id из сообщения callback
-    thread_id = query.message.message_thread_id
-
-    if data == "start_actions":
-        await start_actions(update, context)
-    elif data == "help":
-        await help_counter(update, context)
-    elif data == "stats_menu":
-        await stats_menu(update, context)
-    elif data.startswith("stats_"):
-        period_choice = data.split("_")[1]
-        if period_choice == "custom":
-            await query.edit_message_text("Пожалуйста, введите период в формате: YYYY-MM-DD YYYY-MM-DD")
-        else:
-            context.args = [period_choice]
-            await stats_counter(update, context)
-    elif data == "edit_count_menu":
-        await edit_count_menu(update, context)
-    elif data.startswith("edit_"):
-        await process_edit(update, context)
-
-async def help_counter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.info("Команда /help_counter вызвана")
-    try:
-        help_text = (
-            "🛠️ *Помощь по боту-счетчику* 🛠️\n\n"
-            "• *Запустить счётчик:* Нажмите кнопку «Запустить счётчик» в главном меню.\n"
-            "• *Изменить счётчик:* Нажмите кнопку «Изменить счётчик» и выберите нужное изменение.\n"
-            "• *Статистика:* Нажмите кнопку «Статистика» и выберите период для отображения статистики.\n"
-            "• *Помощь:* Отображает это сообщение.\n\n"
-            "📌 _Примечание:_ Если бот используется в группе, убедитесь, что режим приватности отключён, или отправляйте команды с упоминанием имени бота."
-        )
-        thread_id = None
-        if update.callback_query:
-            thread_id = update.callback_query.message.message_thread_id
-        elif update.message:
-            thread_id = update.message.message_thread_id
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text=help_text,
-            parse_mode="Markdown",
-            disable_web_page_preview=True,
-            message_thread_id=thread_id
-        )
-        logger.info("Ответ на /help_counter отправлен")
-    except Exception as e:
-        logger.error(f"Ошибка в /help_counter: {str(e)}", exc_info=True)
-
+# /edit_count – изменение счётчика вручную
 async def edit_count(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("Команда /edit_count вызвана")
     try:
@@ -542,11 +202,12 @@ async def edit_count(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             else:
                 await update.effective_message.reply_text("Первый аргумент должен быть 'friend' или 'me'.")
                 return
-        logger.info(f"Счетчик изменен: Ян={bot_data['my_count']}, Егор={bot_data['friend_count']}")
+        logger.info(f"Счётчик изменён: Ян={bot_data['my_count']}, Егор={bot_data['friend_count']}")
         await update_counter_message(context)
     except Exception as e:
         logger.error(f"Ошибка в /edit_count: {str(e)}", exc_info=True)
 
+# /stats_counter – получение статистики (без дополнительного меню)
 async def stats_counter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("Команда /stats_counter вызвана")
     try:
@@ -563,8 +224,6 @@ async def stats_counter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         elif period == "month":
             start_date = datetime.now().replace(day=1)
             filtered = [rec for rec in all_data if datetime.strptime(rec["date"], "%Y-%m-%d") >= start_date]
-        elif period == "custom":
-            filtered = all_data  # При custom мы не фильтруем автоматически
         else:
             filtered = all_data
 
@@ -573,11 +232,8 @@ async def stats_counter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         df = pd.DataFrame(filtered)
         df_hash = df.to_json(orient='split')
         plot_buf = await generate_plot_cached(df_hash, period)
-        thread_id = None
-        if update.callback_query:
-            thread_id = update.callback_query.message.message_thread_id
-        elif update.message:
-            thread_id = update.message.message_thread_id
+        # Если возможно, отправляем в том же треде, где была команда
+        thread_id = update.effective_message.message_thread_id if update.effective_message else None
         await context.bot.send_photo(
             chat_id=update.effective_chat.id,
             photo=plot_buf,
@@ -588,6 +244,43 @@ async def stats_counter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     except Exception as e:
         logger.error(f"Ошибка в /stats_counter: {str(e)}", exc_info=True)
 
+# /help_counter – вывод списка команд
+async def help_counter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.info("Команда /help_counter вызвана")
+    try:
+        help_text = (
+            "🛠️ *Помощь по боту-счетчику* 🛠️\n\n"
+            "• /start_actions – запустить счётчик (в теме супергруппы)\n"
+            "• /edit_count <friend|me> <число> – изменить счётчик вручную\n"
+            "• /stats_counter [week|month|all] – показать статистику\n"
+            "• /help_counter – помощь\n\n"
+            "📌 _Примечание:_ Если бот используется в группе, убедитесь, что режим приватности отключён, или отправляйте команды с упоминанием имени бота."
+        )
+        thread_id = update.effective_message.message_thread_id if update.effective_message else None
+        await update.effective_message.reply_text(help_text, parse_mode="Markdown", message_thread_id=thread_id)
+        logger.info("Ответ на /help_counter отправлен")
+    except Exception as e:
+        logger.error(f"Ошибка в /help_counter: {str(e)}", exc_info=True)
+
+# Функция обновления сообщения-счётчика
+async def update_counter_message(context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.info("Обновление сообщения-счётчика")
+    try:
+        chat_id = bot_data["actions_chat_id"]
+        msg_id = bot_data["actions_msg_id"]
+        if not chat_id or not msg_id:
+            logger.warning("Не установлены chat_id или msg_id для обновления")
+            return
+        button_text = f"{bot_data['friend_count']}/{bot_data['my_count']}"
+        # Обновляем текст сообщения-счётчика
+        await safe_edit_message(context, chat_id, msg_id, f"Счётчик: {button_text}")
+        logger.info("Сообщение-счётчик успешно обновлено")
+    except BadRequest as e:
+        logger.error(f"Не удалось обновить сообщение: {str(e)}")
+    except Exception as e:
+        logger.error(f"Ошибка в update_counter_message: {str(e)}", exc_info=True)
+
+# Обработчик входящих текстовых сообщений для автоматического подсчёта
 async def count_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("Входящее сообщение для подсчёта получено")
     try:
@@ -713,46 +406,6 @@ async def generate_plot_cached(df_hash: str, period: str) -> BytesIO:
         logger.error(f"Ошибка в кэшированной функции: {str(e)}")
         raise
 
-# Обработчик callback-запросов
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-    logger.info(f"Нажата кнопка: {data}")
-    if data == "start_actions":
-        await start_actions(update, context)
-    elif data == "help":
-        await help_counter(update, context)
-    elif data == "stats_menu":
-        await stats_menu(update, context)
-    elif data.startswith("stats_"):
-        period_choice = data.split("_")[1]
-        if period_choice == "custom":
-            await query.edit_message_text("Пожалуйста, введите период в формате: YYYY-MM-DD YYYY-MM-DD")
-        else:
-            context.args = [period_choice]
-            await stats_counter(update, context)
-    elif data == "edit_count_menu":
-        await edit_count_menu(update, context)
-    elif data.startswith("edit_"):
-        await process_edit(update, context)
-
-async def process_edit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    try:
-        data = update.callback_query.data
-        parts = data.split("_")
-        target = parts[1]
-        delta = int(parts[2])
-        async with data_lock:
-            if target == "me":
-                bot_data["my_count"] += delta
-            elif target == "friend":
-                bot_data["friend_count"] += delta
-        await update_counter_message(context)
-        await update.callback_query.answer(text="Счёт обновлён")
-    except Exception as e:
-        logger.error(f"Ошибка в изменении счётчика: {str(e)}", exc_info=True)
-
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.error(f"Ошибка: {context.error}", exc_info=True)
     if isinstance(context.error, TelegramError):
@@ -772,12 +425,11 @@ async def main():
     logger.info("Начальные данные загружены")
 
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("start_actions", start_actions))
     application.add_handler(CommandHandler("edit_count", edit_count))
     application.add_handler(CommandHandler("stats_counter", stats_counter))
     application.add_handler(CommandHandler("help_counter", help_counter))
-    application.add_handler(CommandHandler("start_actions", start_actions))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, count_messages))
-    application.add_handler(CallbackQueryHandler(button_handler))
     application.add_error_handler(error_handler)
     logger.info("Обработчики зарегистрированы")
 
