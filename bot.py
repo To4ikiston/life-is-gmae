@@ -26,6 +26,7 @@ from quart import Quart, request, Response
 from hypercorn.asyncio import serve
 from hypercorn.config import Config
 from tenacity import retry, stop_after_attempt, wait_exponential
+from zoneinfo import ZoneInfo
 
 application = None
 
@@ -301,7 +302,7 @@ async def count_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return
 
         user_id = update.effective_user.id
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = datetime.now(ZoneInfo("Asia/Yekaterinburg")).strftime("%Y-%m-%d")
         if user_id not in [FRIEND_ID, MY_ID]:
             logger.debug(f"Сообщение от неизвестного пользователя: {user_id}")
             return
