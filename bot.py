@@ -11,7 +11,7 @@ import logging
 import os
 import sys
 import nest_asyncio
-from functools import lru_cache
+from functools import lru_cache  # (будет не использоваться для графика)
 import json
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import BadRequest, TelegramError
@@ -137,9 +137,9 @@ async def test_webhook():
     logger.info("Получен GET запрос на /test_webhook")
     return "Test webhook работает", 200
 
-# ----------------- Команды через слэш -----------------
+# ------------- Слэш-команды без callback-обработчиков -------------
 
-# /start – приветствие и список команд
+# /start – приветствие и список доступных команд
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("Команда /start вызвана")
     try:
@@ -156,7 +156,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception as e:
         logger.error(f"Ошибка в /start: {str(e)}", exc_info=True)
 
-# /start_actions – запускает счётчик и отправляет сообщение-счётчик с одной кнопкой
+# /start_actions – запускает счётчик, отправляя сообщение с текстом "Счётчик" и единственной кнопкой с текущим счётом
 async def start_actions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("Команда /start_actions вызвана")
     try:
@@ -171,12 +171,12 @@ async def start_actions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         bot_data["thread_id"] = thread_id
         bot_data["actions_chat_id"] = update.effective_chat.id
 
-        # Отправляем сообщение с текстом и единственной неактивной кнопкой, отображающей счёт
+        # Отправляем сообщение с текстом "Счётчик" и встроенной кнопкой с текущим счётом (например, "0/0")
         counter_text = f"{bot_data['friend_count']}/{bot_data['my_count']}"
         keyboard = [[InlineKeyboardButton(counter_text, callback_data="none")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         msg = await update.effective_message.reply_text(
-            "Счётчик действий",
+            "Счётчик",
             reply_markup=reply_markup,
             message_thread_id=thread_id
         )
@@ -185,7 +185,7 @@ async def start_actions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     except Exception as e:
         logger.error(f"Ошибка в /start_actions: {str(e)}", exc_info=True)
 
-# /edit_count – изменение счётчика вручную
+# /edit_count – изменение счётчика вручную (через слэш-команду)
 async def edit_count(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("Команда /edit_count вызвана")
     try:
@@ -212,7 +212,7 @@ async def edit_count(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     except Exception as e:
         logger.error(f"Ошибка в /edit_count: {str(e)}", exc_info=True)
 
-# /stats_counter – получение статистики и отправка графика в том же треде
+# /stats_counter – получение статистики и отправка графика (в том же треде, если есть)
 async def stats_counter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("Команда /stats_counter вызвана")
     try:
@@ -248,7 +248,7 @@ async def stats_counter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     except Exception as e:
         logger.error(f"Ошибка в /stats_counter: {str(e)}", exc_info=True)
 
-# /help_counter – вывод списка команд
+# /help_counter – вывод списка команд (помощь)
 async def help_counter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("Команда /help_counter вызвана")
     try:
@@ -266,7 +266,7 @@ async def help_counter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     except Exception as e:
         logger.error(f"Ошибка в /help_counter: {str(e)}", exc_info=True)
 
-# Функция обновления сообщения-счётчика (с одной кнопкой, отображающей счёт)
+# Функция обновления сообщения-счётчика (текст всегда "Счётчик", а кнопка отображает текущие значения)
 async def update_counter_message(context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("Обновление сообщения-счётчика")
     try:
@@ -278,15 +278,15 @@ async def update_counter_message(context: ContextTypes.DEFAULT_TYPE) -> None:
         button_text = f"{bot_data['friend_count']}/{bot_data['my_count']}"
         keyboard = [[InlineKeyboardButton(button_text, callback_data="none")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        # Обновляем текст сообщения-счётчика
-        await safe_edit_message(context, chat_id, msg_id, f"Счётчик: {button_text}\n(Друга/Мой)", reply_markup)
+        # Текст сообщения остаётся неизменным – "Счётчик"
+        await safe_edit_message(context, chat_id, msg_id, "Счётчик", reply_markup)
         logger.info("Сообщение-счётчик успешно обновлено")
     except BadRequest as e:
         logger.error(f"Не удалось обновить сообщение: {str(e)}")
     except Exception as e:
         logger.error(f"Ошибка в update_counter_message: {str(e)}", exc_info=True)
 
-# Обработчик входящих текстовых сообщений для автоматического подсчёта (если пишут в нужном треде)
+# Обработчик входящих сообщений для автоматического подсчёта (если пишут в нужном треде)
 async def count_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("Входящее сообщение для подсчёта получено")
     try:
@@ -345,7 +345,7 @@ async def count_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     except Exception as e:
         logger.error(f"Ошибка обработки сообщения: {str(e)}", exc_info=True)
 
-# Функции для генерации графика (оставляем без изменений)
+# Функция генерации графика (оставляем без изменений)
 async def generate_plot(df: pd.DataFrame, period: str) -> BytesIO:
     logger.info("Начало генерации графика")
     fig, ax = plt.subplots(figsize=(12, 6))
@@ -403,14 +403,14 @@ async def generate_plot(df: pd.DataFrame, period: str) -> BytesIO:
         logger.info("График сгенерирован")
         return buf
 
-@lru_cache(maxsize=10)
+# Здесь убираем декоратор кэширования, чтобы график всегда генерировался заново
 async def generate_plot_cached(df_hash: str, period: str) -> BytesIO:
-    logger.info("Вызов кэшированной функции генерации графика")
+    logger.info("Вызов функции генерации графика (без кеширования)")
     try:
         df = pd.read_json(df_hash, orient='split')
         return await generate_plot(df, period)
     except Exception as e:
-        logger.error(f"Ошибка в кэшированной функции: {str(e)}")
+        logger.error(f"Ошибка в функции генерации графика: {str(e)}")
         raise
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
