@@ -13,7 +13,7 @@ import sys
 import nest_asyncio
 from functools import lru_cache
 import json
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import BadRequest, TelegramError
 from telegram.ext import (
     ApplicationBuilder,
@@ -80,7 +80,7 @@ async def load_initial_data():
         data = supabase.table("actions").select("*").execute().data
         bot_data["friend_count"] = sum(row["count"] for row in data if row["user_id"] == FRIEND_ID)
         bot_data["my_count"] = sum(row["count"] for row in data if row["user_id"] == MY_ID)
-        logger.info(f"Данные восстановлены: Ян={bot_data['my_count']}, Егор={bot_data['friend_count']}")
+        logger.info(f"Данные восстановлены: Мой счёт = {bot_data['my_count']}, Счёт друга = {bot_data['friend_count']}")
     except Exception as e:
         logger.error(f"Ошибка загрузки данных: {str(e)}", exc_info=True)
 
@@ -136,18 +136,18 @@ async def test_webhook():
     logger.info("Получен GET запрос на /test_webhook")
     return "Test webhook работает", 200
 
-# ----------------- Команды через слеш -----------------
+# ----------------- Команды через слэш -----------------
 
-# /start – выводит приветственное сообщение и список команд
+# /start – приветствие и список команд
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("Команда /start вызвана")
     try:
         text = (
             "Привет! Я бот-счётчик.\n\n"
             "Доступные команды:\n"
-            "• /start_actions – запустить счётчик (обязательно в теме супергруппы)\n"
+            "• /start_actions – запустить счётчик (команда должна вызываться в теме супергруппы)\n"
             "• /edit_count <friend|me> <число> – изменить счётчик вручную\n"
-            "• /stats_counter [период] – показать статистику (week, month, all)\n"
+            "• /stats_counter [week|month|all] – показать статистику\n"
             "• /help_counter – помощь"
         )
         await update.effective_message.reply_text(text)
@@ -155,7 +155,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception as e:
         logger.error(f"Ошибка в /start: {str(e)}", exc_info=True)
 
-# /start_actions – запускает счётчик
+# /start_actions – запускает счётчик и отправляет сообщение-счётчик с одной кнопкой
 async def start_actions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("Команда /start_actions вызвана")
     try:
@@ -170,9 +170,13 @@ async def start_actions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         bot_data["thread_id"] = thread_id
         bot_data["actions_chat_id"] = update.effective_chat.id
 
+        # Отправляем сообщение-счётчик с INLINE кнопкой, на которой отображается счёт
         counter_text = f"{bot_data['friend_count']}/{bot_data['my_count']}"
+        keyboard = [[InlineKeyboardButton(counter_text, callback_data="none")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
         msg = await update.effective_message.reply_text(
             f"Счётчик: {counter_text}",
+            reply_markup=reply_markup,
             message_thread_id=thread_id
         )
         bot_data["actions_msg_id"] = msg.message_id
@@ -202,12 +206,12 @@ async def edit_count(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             else:
                 await update.effective_message.reply_text("Первый аргумент должен быть 'friend' или 'me'.")
                 return
-        logger.info(f"Счётчик изменён: Ян={bot_data['my_count']}, Егор={bot_data['friend_count']}")
+        logger.info(f"Счётчик изменён: Мой счёт = {bot_data['my_count']}, Счёт друга = {bot_data['friend_count']}")
         await update_counter_message(context)
     except Exception as e:
         logger.error(f"Ошибка в /edit_count: {str(e)}", exc_info=True)
 
-# /stats_counter – получение статистики (без дополнительного меню)
+# /stats_counter – получение статистики и отправка графика в том же треде
 async def stats_counter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("Команда /stats_counter вызвана")
     try:
@@ -232,7 +236,6 @@ async def stats_counter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         df = pd.DataFrame(filtered)
         df_hash = df.to_json(orient='split')
         plot_buf = await generate_plot_cached(df_hash, period)
-        # Если возможно, отправляем в том же треде, где была команда
         thread_id = update.effective_message.message_thread_id if update.effective_message else None
         await context.bot.send_photo(
             chat_id=update.effective_chat.id,
@@ -250,7 +253,7 @@ async def help_counter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     try:
         help_text = (
             "🛠️ *Помощь по боту-счетчику* 🛠️\n\n"
-            "• /start_actions – запустить счётчик (в теме супергруппы)\n"
+            "• /start_actions – запустить счётчик (команда должна вызываться в теме супергруппы)\n"
             "• /edit_count <friend|me> <число> – изменить счётчик вручную\n"
             "• /stats_counter [week|month|all] – показать статистику\n"
             "• /help_counter – помощь\n\n"
@@ -262,7 +265,7 @@ async def help_counter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     except Exception as e:
         logger.error(f"Ошибка в /help_counter: {str(e)}", exc_info=True)
 
-# Функция обновления сообщения-счётчика
+# Функция обновления сообщения-счётчика (с одной кнопкой, которая лишь отображает счёт)
 async def update_counter_message(context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("Обновление сообщения-счётчика")
     try:
@@ -272,15 +275,17 @@ async def update_counter_message(context: ContextTypes.DEFAULT_TYPE) -> None:
             logger.warning("Не установлены chat_id или msg_id для обновления")
             return
         button_text = f"{bot_data['friend_count']}/{bot_data['my_count']}"
+        keyboard = [[InlineKeyboardButton(button_text, callback_data="none")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
         # Обновляем текст сообщения-счётчика
-        await safe_edit_message(context, chat_id, msg_id, f"Счётчик: {button_text}")
+        await safe_edit_message(context, chat_id, msg_id, f"Счётчик: {button_text}\n(Друга/Мой)", reply_markup)
         logger.info("Сообщение-счётчик успешно обновлено")
     except BadRequest as e:
         logger.error(f"Не удалось обновить сообщение: {str(e)}")
     except Exception as e:
         logger.error(f"Ошибка в update_counter_message: {str(e)}", exc_info=True)
 
-# Обработчик входящих текстовых сообщений для автоматического подсчёта
+# Обработчик входящих текстовых сообщений для автоматического подсчёта (если пишут в нужном треде)
 async def count_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("Входящее сообщение для подсчёта получено")
     try:
@@ -305,7 +310,7 @@ async def count_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 bot_data["friend_count"] += 1
             else:
                 bot_data["my_count"] += 1
-            logger.info(f"Обновлены счётчики: Ян={bot_data['my_count']}, Егор={bot_data['friend_count']}")
+            logger.info(f"Обновлены счётчики: Мой счёт = {bot_data['my_count']}, Счёт друга = {bot_data['friend_count']}")
 
         try:
             existing = supabase.table('actions') \
@@ -339,6 +344,7 @@ async def count_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     except Exception as e:
         logger.error(f"Ошибка обработки сообщения: {str(e)}", exc_info=True)
 
+# Функции для генерации графика (оставляем без изменений)
 async def generate_plot(df: pd.DataFrame, period: str) -> BytesIO:
     logger.info("Начало генерации графика")
     fig, ax = plt.subplots(figsize=(12, 6))
@@ -368,12 +374,12 @@ async def generate_plot(df: pd.DataFrame, period: str) -> BytesIO:
         bar_width = 0.35
         x = np.arange(len(dates))
         ax.bar(x - bar_width/2, yan, bar_width, label='Ян', color='#3498db', alpha=0.7)
-        ax.bar(x + bar_width/2, egor, bar_width, label='Егор', color='#2ecc71', alpha=0.7)
+        ax.bar(x + bar_width/2, egor, bar_width, label='Друг', color='#2ecc71', alpha=0.7)
 
         if len(dates) >= 3:
             window = min(3, len(dates))
             ax.plot(x, yan.rolling(window).mean(), color='#2980b9', linestyle='--', label='Тренд Ян')
-            ax.plot(x, egor.rolling(window).mean(), color='#27ae60', linestyle='--', label='Тренд Егор')
+            ax.plot(x, egor.rolling(window).mean(), color='#27ae60', linestyle='--', label='Тренд Друг')
 
         ax.set_xticks(x)
         ax.set_xticklabels([d.strftime("%d.%m") for d in dates], rotation=45)
