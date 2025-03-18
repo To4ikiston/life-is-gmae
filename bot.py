@@ -139,7 +139,64 @@ async def test_webhook():
     return "Test webhook работает", 200
 
 # === Интерфейс через кнопки ===
+async def count_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.info("Входящее сообщение для подсчёта получено")
+    try:
+        if update.message is None:
+            logger.debug("update.message отсутствует")
+            return
+        if not bot_data["thread_id"]:
+            logger.debug("thread_id не установлен")
+            return
+        if update.message.message_thread_id != bot_data["thread_id"]:
+            logger.debug("Сообщение не из нужной темы")
+            return
 
+        user_id = update.effective_user.id
+        today = datetime.now().strftime("%Y-%m-%d")
+        if user_id not in [FRIEND_ID, MY_ID]:
+            logger.debug(f"Сообщение от неизвестного пользователя: {user_id}")
+            return
+
+        async with data_lock:
+            if user_id == FRIEND_ID:
+                bot_data["friend_count"] += 1
+            else:
+                bot_data["my_count"] += 1
+            logger.info(f"Обновлены счётчики: Ян={bot_data['my_count']}, Егор={bot_data['friend_count']}")
+
+        try:
+            existing = supabase.table('actions') \
+                .select("count") \
+                .eq("user_id", user_id) \
+                .eq("date", today) \
+                .execute().data
+
+            if existing and len(existing) > 0:
+                new_count = existing[0]['count'] + 1
+                _ = supabase.table('actions') \
+                    .update({"count": new_count}) \
+                    .eq("user_id", user_id) \
+                    .eq("date", today) \
+                    .execute()
+            else:
+                _ = supabase.table('actions') \
+                    .insert({"user_id": user_id, "date": today, "count": 1}) \
+                    .execute()
+            logger.info("Данные в Supabase обновлены")
+        except Exception as e:
+            async with data_lock:
+                if user_id == FRIEND_ID:
+                    bot_data["friend_count"] -= 1
+                else:
+                    bot_data["my_count"] -= 1
+            logger.error(f"Ошибка Supabase: {str(e)}")
+            raise
+
+        await update_counter_message(context)
+        logger.info("Сообщение с обновленным счётчиком отправлено")
+    except Exception as e:
+        logger.error(f"Ошибка обработки сообщения: {str(e)}", exc_info=True)
 # Главное меню, отправляемое при /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("Команда /start вызвана")
