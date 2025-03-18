@@ -21,10 +21,9 @@ from telegram.ext import (
     filters,
     ContextTypes,
 )
-from quart import Quart, request, Response  # добавил Response для удобства логирования ошибок
+from quart import Quart, request, Response  # для логирования ошибок
 from hypercorn.asyncio import serve
 from hypercorn.config import Config
-# Добавьте новый импорт
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 application = None
@@ -69,12 +68,10 @@ data_lock = asyncio.Lock()
 try:
     # 2.1. Пытаемся подключиться к Supabase
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-    
     # 2.2. Проверяем подключение (делаем тестовый запрос)
     test = supabase.table("actions").select("user_id").limit(1).execute()
     logger.info("✅ Успешное подключение к Supabase")
 except Exception as e:
-    # 2.3. Если произошла ошибка:
     logger.critical(f"❌ Ошибка подключения к Supabase: {str(e)}")
     sys.exit(1)  # Завершаем работу бота
 
@@ -106,13 +103,13 @@ async def health():
     logger.info("Health check вызван")
     return 'OK', 200
 
+# Catch-all маршрут для GET-запросов (для отладки)
 @app.route('/<path:path>', methods=['GET'])
 async def catch_all(path):
     logger.info(f"Получен GET запрос на произвольный путь: /{path}")
     return f"Запрошенный путь: /{path}", 200
 
-
-# Обработчик вебхука Telegram с добавленным логированием
+# Обработчик вебхука Telegram с логированием
 @app.route('/telegram', methods=['POST'])
 @app.route('/telegram/', methods=['POST'])
 async def telegram_webhook():
@@ -120,7 +117,7 @@ async def telegram_webhook():
     if application is None:
         logger.error("Бот ещё не инициализирован.")
         return 'Server Error', 500
-    # Проверка секретного токена
+    # Проверка секретного токена (если не нужна, можно временно закомментировать)
     if request.headers.get('X-Telegram-Bot-Api-Secret-Token') != SECRET_TOKEN:
         logger.warning("Запрос с неверным секретным токеном")
         return 'Forbidden', 403
@@ -143,12 +140,14 @@ async def telegram_webhook():
         logger.error(f"Неизвестная ошибка в вебхуке: {str(e)}", exc_info=True)
         return 'Server Error', 500
 
+# Тестовый GET-обработчик для /telegram
 @app.route('/telegram', methods=['GET'])
 @app.route('/telegram/', methods=['GET'])
 async def telegram_webhook_get():
     logger.info("Получен GET запрос на /telegram")
     return "Telegram GET endpoint работает", 200
 
+# Тестовый маршрут /test_webhook
 @app.route('/test_webhook', methods=['GET'])
 async def test_webhook():
     logger.info("Получен GET запрос на /test_webhook")
@@ -199,7 +198,8 @@ async def start_actions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         bot_data["actions_msg_id"] = sent_msg.message_id
         logger.info(f"Сообщение со счётчиком отправлено, ID: {sent_msg.message_id}")
 
-        await update.message.reply_text("Счётчик запущен!")
+        # Вместо reply_text используем send_message, чтобы избежать ошибки "Message to be replied not found"
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="Счётчик запущен!")
     except Exception as e:
         logger.error(f"Ошибка в /start_actions: {str(e)}", exc_info=True)
 
@@ -255,8 +255,7 @@ async def count_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     .insert({"user_id": user_id, "date": today, "count": 1}) \
                     .execute()
 
-            if response.error:
-                raise Exception(f"Supabase error: {response.error}")
+            # Удаляем проверку response.error, так как она не поддерживается
             logger.info("Данные в Supabase обновлены")
         except Exception as e:
             async with data_lock:
@@ -453,14 +452,14 @@ async def stats_counter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         today = datetime.now()
         if period == "week":
             start_date = today - timedelta(days=7)
-            query = query.gte("date", start_date.strftime("%Y-%m-%d"))
+            query = query.filter("date", "gte", start_date.strftime("%Y-%m-%d"))
         elif period == "month":
             start_date = today.replace(day=1)
-            query = query.gte("date", start_date.strftime("%Y-%m-%d"))
+            query = query.filter("date", "gte", start_date.strftime("%Y-%m-%d"))
         elif period == "all":
             pass
         elif period == "custom":
-            query = query.gte("date", start_date.strftime("%Y-%m-%d")).lte("date", end_date.strftime("%Y-%m-%d"))
+            query = query.filter("date", "gte", start_date.strftime("%Y-%m-%d")).filter("date", "lte", end_date.strftime("%Y-%m-%d"))
 
         query = query.in_("user_id", [FRIEND_ID, MY_ID])
         data = query.select("user_id, date, count").execute().data
@@ -492,8 +491,8 @@ async def main():
     application = (
         ApplicationBuilder()
             .token(BOT_TOKEN)
-            .read_timeout(30)  # Добавлено
-            .write_timeout(30)  # Добавлено
+            .read_timeout(30)
+            .write_timeout(30)
             .build()
     )
 
