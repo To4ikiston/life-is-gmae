@@ -7,3 +7,4 @@ supabase>=0.0.10
 pandas>=1.0.0
 matplotlib>=3.0.0
 numpy>=1.18.0
+seaborn
