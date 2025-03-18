@@ -1,4 +1,3 @@
-# Добавьте эти строки:
 from supabase import create_client, Client
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -21,7 +20,7 @@ from telegram.ext import (
     filters,
     ContextTypes,
 )
-from quart import Quart, request, Response  # для логирования ошибок
+from quart import Quart, request, Response
 from hypercorn.asyncio import serve
 from hypercorn.config import Config
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -66,14 +65,13 @@ bot_data = {
 }
 data_lock = asyncio.Lock()
 try:
-    # 2.1. Пытаемся подключиться к Supabase
+    # Подключаемся к Supabase
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-    # 2.2. Проверяем подключение (делаем тестовый запрос)
     test = supabase.table("actions").select("user_id").limit(1).execute()
     logger.info("✅ Успешное подключение к Supabase")
 except Exception as e:
     logger.critical(f"❌ Ошибка подключения к Supabase: {str(e)}")
-    sys.exit(1)  # Завершаем работу бота
+    sys.exit(1)
 
 async def load_initial_data():
     """Загружает данные из Supabase при старте бота"""
@@ -86,7 +84,6 @@ async def load_initial_data():
     except Exception as e:
         logger.error(f"Ошибка загрузки данных: {str(e)}", exc_info=True)
 
-# Функция для безопасного редактирования сообщения с логированием
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
 async def safe_edit_message(context, chat_id, msg_id, text, reply_markup):
     logger.info(f"safe_edit_message: редактирование сообщения {msg_id} в чате {chat_id}")
@@ -97,19 +94,17 @@ async def safe_edit_message(context, chat_id, msg_id, text, reply_markup):
         reply_markup=reply_markup
     )
 
-# Эндпоинт для Health Check
 @app.route('/health')
 async def health():
     logger.info("Health check вызван")
     return 'OK', 200
 
-# Catch-all маршрут для GET-запросов (для отладки)
 @app.route('/<path:path>', methods=['GET'])
 async def catch_all(path):
     logger.info(f"Получен GET запрос на произвольный путь: /{path}")
     return f"Запрошенный путь: /{path}", 200
 
-# Обработчик вебхука Telegram с логированием
+# Обработчик вебхука Telegram (обрабатывает и /telegram, и /telegram/)
 @app.route('/telegram', methods=['POST'])
 @app.route('/telegram/', methods=['POST'])
 async def telegram_webhook():
@@ -117,11 +112,9 @@ async def telegram_webhook():
     if application is None:
         logger.error("Бот ещё не инициализирован.")
         return 'Server Error', 500
-    # Проверка секретного токена (если не нужна, можно временно закомментировать)
     if request.headers.get('X-Telegram-Bot-Api-Secret-Token') != SECRET_TOKEN:
         logger.warning("Запрос с неверным секретным токеном")
         return 'Forbidden', 403
-        
     try:
         json_data = await request.get_json()
         logger.info(f"Получены данные от Telegram: {json_data}")
@@ -140,20 +133,18 @@ async def telegram_webhook():
         logger.error(f"Неизвестная ошибка в вебхуке: {str(e)}", exc_info=True)
         return 'Server Error', 500
 
-# Тестовый GET-обработчик для /telegram
 @app.route('/telegram', methods=['GET'])
 @app.route('/telegram/', methods=['GET'])
 async def telegram_webhook_get():
     logger.info("Получен GET запрос на /telegram")
     return "Telegram GET endpoint работает", 200
 
-# Тестовый маршрут /test_webhook
 @app.route('/test_webhook', methods=['GET'])
 async def test_webhook():
     logger.info("Получен GET запрос на /test_webhook")
     return "Test webhook работает", 200
 
-# Обработчик команды /start с логированием
+# Команда /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("Команда /start вызвана")
     try:
@@ -166,7 +157,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception as e:
         logger.error(f"Ошибка в /start: {str(e)}", exc_info=True)
 
-# Обработчик команды /start_actions с логированием
+# Команда /start_actions
 async def start_actions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("Команда /start_actions вызвана")
     try:
@@ -176,15 +167,12 @@ async def start_actions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             await update.message.reply_text("Это не тема супергруппы. Используйте /start_actions в теме!")
             return
 
-        # Инициализация счетчиков
         bot_data.setdefault("friend_count", 0)
         bot_data.setdefault("my_count", 0)
 
-        # Обновляем идентификаторы
         bot_data["thread_id"] = thread_id
         bot_data["actions_chat_id"] = update.effective_chat.id
 
-        # Создаем сообщение со счетчиком
         button_text = f"{bot_data['friend_count']}/{bot_data['my_count']}"
         keyboard = [[InlineKeyboardButton(button_text, callback_data="none")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -198,12 +186,12 @@ async def start_actions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         bot_data["actions_msg_id"] = sent_msg.message_id
         logger.info(f"Сообщение со счётчиком отправлено, ID: {sent_msg.message_id}")
 
-        # Вместо reply_text используем send_message, чтобы избежать ошибки "Message to be replied not found"
-        await context.bot.send_message(chat_id=update.effective_chat.id, text="Счётчик запущен!")
+        # Отправляем подтверждение без использования reply_text
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="Счётчик запущен!", message_thread_id=thread_id)
     except Exception as e:
         logger.error(f"Ошибка в /start_actions: {str(e)}", exc_info=True)
 
-# Обработчик входящих сообщений для подсчёта с логированием
+# Обработчик входящих сообщений для подсчёта
 async def count_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("Входящее сообщение для подсчёта получено")
     try:
@@ -222,12 +210,10 @@ async def count_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         user_id = update.effective_user.id
         today = datetime.now().strftime("%Y-%m-%d")
 
-        # Если пользователь не из списка – пропускаем
         if user_id not in [FRIEND_ID, MY_ID]:
             logger.debug(f"Сообщение от неизвестного пользователя: {user_id}")
             return
 
-        # Увеличиваем счётчик в памяти ОДИН РАЗ
         async with data_lock:
             if user_id == FRIEND_ID:
                 bot_data["friend_count"] += 1
@@ -235,7 +221,6 @@ async def count_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 bot_data["my_count"] += 1
             logger.info(f"Обновлены счётчики: Ян={bot_data['my_count']}, Егор={bot_data['friend_count']}")
 
-        # Пытаемся обновить данные в Supabase
         try:
             existing = supabase.table('actions') \
                 .select("count") \
@@ -255,7 +240,6 @@ async def count_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     .insert({"user_id": user_id, "date": today, "count": 1}) \
                     .execute()
 
-            # Удаляем проверку response.error, так как она не поддерживается
             logger.info("Данные в Supabase обновлены")
         except Exception as e:
             async with data_lock:
@@ -271,7 +255,7 @@ async def count_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     except Exception as e:
         logger.error(f"Ошибка обработки сообщения: {str(e)}", exc_info=True)
 
-# Обработчик команды /help_counter с логированием
+# Команда /help_counter
 async def help_counter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("Команда /help_counter вызвана")
     try:
@@ -287,17 +271,20 @@ async def help_counter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "🔹 `/help_counter` — Вывести это сообщение помощи.\n\n"
             "📌 _Примечание:_ Если бот используется в группе, убедитесь, что режим приватности отключён, или отправляйте команды с упоминанием имени бота."
         )
+        # Отправляем сообщение в ту же тему, где была вызвана команда
+        thread_id = update.effective_message.message_thread_id
         await context.bot.send_message(
             chat_id=update.effective_chat.id,
             text=help_text,
             parse_mode="Markdown",
-            disable_web_page_preview=True
+            disable_web_page_preview=True,
+            message_thread_id=thread_id
         )
         logger.info("Ответ на /help_counter отправлен")
     except Exception as e:
         logger.error(f"Ошибка в /help_counter: {str(e)}", exc_info=True)
 
-# Функция обновления сообщения-счётчика с логированием
+# Функция обновления сообщения-счётчика
 async def update_counter_message(context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("Обновление сообщения-счётчика")
     try:
@@ -318,7 +305,7 @@ async def update_counter_message(context: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception as e:
         logger.error(f"Ошибка в update_counter_message: {str(e)}", exc_info=True)
 
-# Функция генерации графика с логированием
+# Функция генерации графика
 async def generate_plot(df: pd.DataFrame, period: str) -> BytesIO:
     logger.info("Начало генерации графика")
     plt.style.use('seaborn-darkgrid')
@@ -390,7 +377,7 @@ async def generate_plot_cached(df_hash: str, period: str) -> BytesIO:
         logger.error(f"Ошибка в кэшированной функции: {str(e)}")
         raise
 
-# Обработчик команды /edit_count с логированием
+# Команда /edit_count
 async def edit_count(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("Команда /edit_count вызвана")
     try:
@@ -420,7 +407,7 @@ async def edit_count(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     except Exception as e:
         logger.error(f"Ошибка в /edit_count: {str(e)}", exc_info=True)
 
-# Обработчик команды /stats_counter с логированием
+# Команда /stats_counter
 async def stats_counter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("Команда /stats_counter вызвана")
     try:
@@ -452,14 +439,14 @@ async def stats_counter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         today = datetime.now()
         if period == "week":
             start_date = today - timedelta(days=7)
-            query = query.filter("date", "gte", start_date.strftime("%Y-%m-%d"))
+            query = query.gte("date", start_date.strftime("%Y-%m-%d"))
         elif period == "month":
             start_date = today.replace(day=1)
-            query = query.filter("date", "gte", start_date.strftime("%Y-%m-%d"))
+            query = query.gte("date", start_date.strftime("%Y-%m-%d"))
         elif period == "all":
             pass
         elif period == "custom":
-            query = query.filter("date", "gte", start_date.strftime("%Y-%m-%d")).filter("date", "lte", end_date.strftime("%Y-%m-%d"))
+            query = query.gte("date", start_date.strftime("%Y-%m-%d")).lte("date", end_date.strftime("%Y-%m-%d"))
 
         query = query.in_("user_id", [FRIEND_ID, MY_ID])
         data = query.select("user_id, date, count").execute().data
@@ -477,13 +464,13 @@ async def stats_counter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     except Exception as e:
         logger.error(f"Ошибка в /stats_counter: {str(e)}", exc_info=True)
 
-# Обработчик ошибок с логированием
+# Обработчик ошибок
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.error(f"Ошибка: {context.error}", exc_info=True)
     if isinstance(context.error, TelegramError):
         logger.error(f"Детали ошибки Telegram: {context.error.message}")
 
-# Основная функция запуска с логированием
+# Основная функция запуска
 async def main():
     global application
     logger.info("Инициализация бота")
@@ -511,7 +498,7 @@ async def main():
 
     # Инициализация и запуск бота
     await application.initialize()
-    await application.start()  # ВАЖНО: запуск фоновых задач бота
+    await application.start()  # Запуск фоновых задач бота
     logger.info("Бот запущен")
 
     # Установка вебхука
